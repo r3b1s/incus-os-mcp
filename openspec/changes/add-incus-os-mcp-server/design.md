@@ -13,12 +13,13 @@ New repo, no code yet. See proposal.md for motivation. Constraints from explorat
 - Correct handling of the two hard protocol areas via the official client: exec (websocket) and file push/pull.
 - Operations handled uniformly: mutations wait on their operation by default; explicit wait tool.
 - Credentials isolated from the human admin cert (dedicated cert, revocable independently).
+- The binary ships a CLI for configuring and operating the server itself (config bootstrap/validation, cert paths, run).
 
 **Non-Goals:**
-- No interactive console/terminal sessions.
+- No interactive instance console/terminal sessions through the MCP tool surface (exec is batch-only).
 - No OAuth/MCP 2.0 server authz yet (loopback-only transport; revisit if exposed beyond 127.0.0.1).
 - No OpenFGA scoping of the server cert (full-admin cert, documented).
-- No web UI, no CLI beyond the server itself.
+- No web UI.
 
 ## Decisions
 
@@ -27,6 +28,9 @@ New repo, no code yet. See proposal.md for motivation. Constraints from explorat
 
 ### D1a: Everything server-specific is configuration
 Base URL, TLS client cert/key paths, listen address/port, and default project come from config file + flags (environment variables for secrets). No endpoint, hostname, or IP is compiled in or documented as a literal; README documents the config schema with placeholder examples.
+
+### D1b: The binary has a CLI
+Same binary, two modes: `run` (the MCP server) and config subcommands (`config init`/`config show`/`config validate`, cert path setup, `doctor` for connection checks). One flagset, one config loader — no separate tooling, useful for bootstrapping and debugging the server itself.
 
 ### D2: Tool architecture — resource-grouped tools over a thin API client wrapper
 One internal `incus.Client` wrapper (config: URL, cert/key paths) used by all tools. Tools grouped per capability; each tool is a thin typed function: request → (wait op) → structured result. No generic passthrough tool: typed tools give agents correct schemas and keep mutations explicit. Tool count target ≈ 40–50.

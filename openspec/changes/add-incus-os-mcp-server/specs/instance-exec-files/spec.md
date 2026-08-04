@@ -23,8 +23,8 @@ Expose command execution and file transfer on Incus instances as MCP tools — t
 - **WHEN** an agent lists or deletes a path
 - **THEN** the operation succeeds for files and directories per the API semantics (recursive flag for directories).
 
-### Requirement: Interactive sessions excluded
-- The server SHALL interactive terminal (console) sessions are out of scope: exec is non-interactive batch execution only.
+### Requirement: Interactive sessions excluded from the MCP tool surface
+The server SHALL NOT expose interactive terminal (console) sessions on instances through the MCP tool surface; exec is non-interactive batch execution only. The server binary's own CLI is unaffected.
 #### Scenario: an-agent-needs-an-interactive-shell
 - **WHEN** an agent needs an interactive shell
-- **THEN** the tool surface does not provide one; the API console remains available out-of-band.
+- **THEN** the MCP tool surface does not provide one; the API console remains available out-of-band.
