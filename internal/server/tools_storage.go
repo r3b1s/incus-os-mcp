@@ -269,20 +269,23 @@ func (s *Server) storageVolumeSnapshotRestore(ctx context.Context, req *mcp.Call
 	if in.Pool == "" || in.VolumeName == "" || in.SnapshotName == "" {
 		return toolError[*api.Operation]("storage_volume_snapshot_restore", errRequired("pool, volume_name, and snapshot_name"))
 	}
-	// Restoring a volume snapshot is a PUT on the volume with the source
-	// snapshot set — via UpdateStoragePoolVolumeSnapshot with Restore? No:
-	// the REST API is POST /storage-pools/<pool>/volumes/custom/<vol>/snapshots/<snap>/restore.
-	// The official client exposes this through CreateStoragePoolVolumeSnapshot
-	// only for creation; restore is a PUT on the snapshot. The supported path:
-	// PUT /1.0/storage-pools/<pool>/volumes/custom/<vol> with Restore set.
-	// Use MigrateStoragePoolVolume is for rename; the restore is done via
-	// UpdateStoragePoolVolume with a snapshot source — but the client does not
-	// expose that directly, so we call the raw REST endpoint via query.
-	// Simplest supported approach: UpdateStoragePoolVolumeSnapshot is a PUT on
-	// the snapshot's config, not a restore. Restore is implemented by
-	// POSTing to the snapshot's restore URL which the client lacks, so we
-	// surface a clear unsupported error.
-	return toolError[*api.Operation]("storage_volume_snapshot_restore", errNotImplemented("volume snapshot restore is not exposed by the official Go client; use incus CLI on the target"))
+	// Restoring a custom volume from a snapshot is a synchronous PUT on the
+	// volume with StorageVolumePut.Restore set to the snapshot name — the
+	// same call the official `incus storage volume snapshot restore` CLI
+	// makes (cmd/incus/storage_volume_snapshot.go). The client gates it on
+	// the storage_api_volume_snapshots extension.
+	_, etag, err := s.client.Server.GetStoragePoolVolume(in.Pool, "custom", in.VolumeName)
+	if err != nil {
+		return toolError[*api.Operation]("storage_volume_snapshot_restore", err)
+	}
+	if err := s.client.Server.UpdateStoragePoolVolume(in.Pool, "custom", in.VolumeName, api.StorageVolumePut{
+		Restore: in.SnapshotName,
+	}, etag); err != nil {
+		return toolError[*api.Operation]("storage_volume_snapshot_restore", err)
+	}
+	// The restore PUT is synchronous (no async operation); report the
+	// completed state.
+	return result(&api.Operation{ID: "", Status: "Success"})
 }
 
 // ---- volume backups ----
