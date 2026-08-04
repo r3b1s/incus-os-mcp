@@ -32,7 +32,7 @@
 ## 6. Verification
 
 - [x] 6.1 Integration pass against a live IncusOS instance (configurable endpoint): smoke-test each tool group (read + one mutation each) with the dedicated cert
-  - verified against the bundled `cmd/mockincus` HTTPS mock (TLS client-cert auth, `/1.0` server + instances): doctor 4/4, MCP initialize/tools/list (95 tools), `server_info`, `instance_list`, admin-gated error path. A live IncusOS pass remains outstanding (no target on this host).
+  - **verified against the live IncusOS VM (Proxmox 9010, Incus 7.3, 541 API extensions)**: doctor 4/4; 18/18 tool-group calls pass end-to-end (server_info, instances create/start/exec/files/snapshot/delete, image import (split meta+rootfs) + export + aliases, storage pools/volumes, networks/ACLs, profiles/projects). Reachability via IPv6 link-local + SSH tunnel through the Proxmox host; target cert pinned. Live test found and fixed 4 real bugs (empty-source create, nil-body file list panic, split-image import/export).
 - [x] 6.2 Security review: loopback-only binding, cert file permissions, no secrets in tool output, error paths don't leak creds
 - [ ] 6.3 Containerized deployment + MCP client registration; end-to-end agent call against the deployed server
   - not done: quadlet unit + MCP client registration are deployment steps for the operator (README points at the intended shape)
