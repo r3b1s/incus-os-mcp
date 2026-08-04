@@ -210,11 +210,20 @@ func (s *Server) filePull(ctx context.Context, req *mcp.CallToolRequest, in File
 	if err != nil {
 		return toolError[FilePullOutput]("file_pull", err)
 	}
-	defer rc.Close()
+	if rc != nil {
+		defer rc.Close()
+	}
+	if resp == nil {
+		return toolError[FilePullOutput]("file_pull", fmt.Errorf("empty response from %s", in.Path))
+	}
 
-	data, err := io.ReadAll(rc)
-	if err != nil {
-		return toolError[FilePullOutput]("file_pull", err)
+	// Directories return a nil body with Entries in the response.
+	var data []byte
+	if rc != nil {
+		data, err = io.ReadAll(rc)
+		if err != nil {
+			return toolError[FilePullOutput]("file_pull", err)
+		}
 	}
 
 	cap := s.client.Config.InlineMaxBytes
@@ -329,9 +338,15 @@ func (s *Server) fileList(ctx context.Context, req *mcp.CallToolRequest, in File
 	if err != nil {
 		return toolError[FileListOutput]("file_list", err)
 	}
-	defer rc.Close()
-	// Drain the body so the connection is reusable.
-	io.Copy(io.Discard, rc)
+	// For directories the client returns a nil body; guard before using it.
+	if rc != nil {
+		defer rc.Close()
+		// Drain the body so the connection is reusable.
+		io.Copy(io.Discard, rc)
+	}
+	if resp == nil {
+		return toolError[FileListOutput]("file_list", fmt.Errorf("empty response from %s", in.Path))
+	}
 	if resp.Type != "directory" {
 		return toolError[FileListOutput]("file_list", fmt.Errorf("not a directory: %s", in.Path))
 	}

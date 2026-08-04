@@ -107,11 +107,18 @@ func (s *Server) instanceCreate(ctx context.Context, req *mcp.CallToolRequest, i
 		Type: itype,
 	}
 	if in.Source != "" {
-		post.Source = api.InstanceSource{
-			Type:   "image",
-			Alias:  in.Source,
-			Server: in.Server,
+		// A 64-hex source is a fingerprint; anything else is an alias.
+		// The Incus API rejects an alias field holding a fingerprint.
+		src := api.InstanceSource{Type: "image", Server: in.Server}
+		if sha256Re.MatchString(in.Source) || len(in.Source) == 64 {
+			src.Fingerprint = in.Source
+		} else {
+			src.Alias = in.Source
 		}
+		post.Source = src
+	} else {
+		// Empty instance: the Incus API requires an explicit "none" source.
+		post.Source = api.InstanceSource{Type: "none"}
 	}
 
 	op, err := s.client.Server.CreateInstance(post)

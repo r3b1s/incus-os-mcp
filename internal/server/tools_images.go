@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 
 	incusclient "github.com/lxc/incus/v7/client"
@@ -72,9 +73,13 @@ type ImageImportInput struct {
 	// Sha256 is the expected image checksum (64 hex chars).
 	Sha256 string `json:"sha256,omitempty" jsonschema:"expected sha256 of the image (64 hex chars); required for URL imports, pre-validated before the API call"`
 
-	// LocalFile is a path on the MCP server host to upload (qcow2/raw for
-	// VMs, tarballs for containers).
-	LocalFile string `json:"local_file,omitempty" jsonschema:"local file path to upload as the image"`
+	// LocalFile is a path on the MCP server host to upload as the image.
+	// For split images (meta + rootfs), pass both LocalFile (the metadata
+	// tarball) and RootfsFile (the rootfs). For single-file images (plain
+	// tarballs, qcow2/raw), pass just LocalFile.
+	LocalFile string `json:"local_file,omitempty" jsonschema:"local file path to upload as the image (metadata tarball for split images; the image itself for single-file images)"`
+	// RootfsFile is the rootfs file for split images.
+	RootfsFile string `json:"rootfs_file,omitempty" jsonschema:"rootfs file path for split images (qcow2/raw for VMs, squashfs/tar.xz for containers)"`
 
 	// Public makes the image public.
 	Public bool `json:"public,omitempty" jsonschema:"make the image public"`
@@ -124,16 +129,29 @@ func (s *Server) imageImport(ctx context.Context, req *mcp.CallToolRequest, in I
 	}
 	defer f.Close()
 
+	args := &incusclient.ImageCreateArgs{
+		MetaFile: f,
+		MetaName: filepath.Base(in.LocalFile),
+	}
+
+	// Split image: also send the rootfs file.
+	if in.RootfsFile != "" {
+		rf, err := os.Open(in.RootfsFile)
+		if err != nil {
+			return toolError[*api.Operation]("image_import", err)
+		}
+		defer rf.Close()
+		args.RootfsFile = rf
+		args.RootfsName = filepath.Base(in.RootfsFile)
+	}
+
 	// The server-side sha256 verification happens after upload; we pass the
-	// file as the meta file (single-file images) which is how the client
-	// handles a plain tarball/disk image.
+	// file(s) to the client's CreateImage, which handles single-file and
+	// split-image uploads.
 	op, err := s.client.Server.CreateImage(api.ImagesPost{
 		ImagePut: api.ImagePut{Public: in.Public},
-		Filename: f.Name(),
-	}, &incusclient.ImageCreateArgs{
-		MetaFile: f,
-		MetaName: f.Name(),
-	})
+		Filename: filepath.Base(in.LocalFile),
+	}, args)
 	if err != nil {
 		return toolError[*api.Operation]("image_import", err)
 	}
@@ -225,25 +243,43 @@ func (s *Server) imageExport(ctx context.Context, req *mcp.CallToolRequest, in I
 	if in.Fingerprint == "" {
 		return toolError[ImageExportOutput]("image_export", errRequired("fingerprint"))
 	}
-	dest := in.DestPath
-	if dest == "" {
-		dest = os.TempDir() + "/incus-os-mcp-export-" + in.Fingerprint[:12] + ".tar"
+	base := in.DestPath
+	if base == "" {
+		base = os.TempDir() + "/incus-os-mcp-export-" + in.Fingerprint[:12]
 	}
-	f, err := os.Create(dest)
+
+	// Split images export two files (meta + rootfs); single-file images only
+	// the meta. We always provide both file handles; the client writes only
+	// the parts the image has.
+	metaPath := base + ".meta.tar"
+	rootfsPath := base + ".rootfs"
+
+	mf, err := os.Create(metaPath)
 	if err != nil {
 		return toolError[ImageExportOutput]("image_export", err)
 	}
-	defer f.Close()
+	defer mf.Close()
+
+	rf, err := os.Create(rootfsPath)
+	if err != nil {
+		return toolError[ImageExportOutput]("image_export", err)
+	}
+	defer rf.Close()
 
 	resp, err := s.client.Server.GetImageFile(in.Fingerprint, incusclient.ImageFileRequest{
-		MetaFile: f,
+		MetaFile:   mf,
+		RootfsFile: rf,
 	})
 	if err != nil {
 		return toolError[ImageExportOutput]("image_export", err)
 	}
 	size := resp.MetaSize + resp.RootfsSize
 
-	return result(ImageExportOutput{Path: dest, Size: size})
+	out := ImageExportOutput{Path: metaPath, Size: size}
+	if resp.RootfsSize > 0 {
+		out.Path = base + " (meta + rootfs)"
+	}
+	return result(out)
 }
 
 // ---- aliases ----
