@@ -6,8 +6,9 @@
 ## 2. Project scaffold
 
 - [ ] 2.1 `go mod init` (module per repo convention); pin `github.com/modelcontextprotocol/go-sdk` ≥v1.7.0 and `github.com/lxc/incus/v7`
-- [ ] 2.2 Config: base URL, TLS cert/key paths, listen address/port, default project — config file + flags (env for secrets), placeholder docs; internal `incus` client wrapper using it
+- [ ] 2.2 Config: base URL, TLS cert/key paths (optional separate admin cert), listen address/port, default project — config file + flags (env for secrets), placeholder docs; internal `incus` client wrapper using it
 - [ ] 2.3 MCP server skeleton on go-sdk (streamable HTTP transport, 127.0.0.1, configurable port) with one probe tool (`server_info`)
+- [ ] 2.4 Error mapping: Incus 403/permission errors → explicit tool errors (scoped-cert graceful degradation); bootstrap docs for `incus auth` + restricted auth group on the target
 
 ## 3. Core tools: instances + operations
 

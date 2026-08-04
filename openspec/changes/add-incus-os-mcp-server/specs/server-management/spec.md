@@ -4,6 +4,15 @@ Expose server-level administration as MCP tools: certificate trust, async operat
 
 ## ADDED Requirements
 
+### Requirement: Scoped-certificate operation
+The server SHALL operate correctly under a restricted (non-admin) client certificate: Incus permission denials are surfaced as clear tool errors, never crashes; admin-only tools report `forbidden` when the configured cert lacks permission.
+#### Scenario: a-scoped-cert-hits-a-permission-denial
+- **WHEN** an agent calls a tool the configured certificate is not permitted to perform
+- **THEN** the tool returns an explicit permission error identifying the operation, and the server keeps running.
+#### Scenario: admin-only-surfaces-with-a-scoped-cert
+- **WHEN** the configured cert is scoped and an agent calls a certificate-management or system-management tool
+- **THEN** the tool reports that the operation requires admin credentials (per the config's admin-cert setup, if any).
+
 ### Requirement: Certificate management
 - The server SHALL tools list, add, and delete trusted certificates.
 #### Scenario: an-agent-adds-a-certificate

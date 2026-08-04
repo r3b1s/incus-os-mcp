@@ -13,12 +13,12 @@ New repo, no code yet. See proposal.md for motivation. Constraints from explorat
 - Correct handling of the two hard protocol areas via the official client: exec (websocket) and file push/pull.
 - Operations handled uniformly: mutations wait on their operation by default; explicit wait tool.
 - Credentials isolated from the human admin cert (dedicated cert, revocable independently).
+- The server cert is **scoped**, not full-admin: the server works under a restricted Incus certificate (OpenFGA/scriptlet authorization on the target), and surfaces permission failures as clean tool errors.
 - The binary ships a CLI for configuring and operating the server itself (config bootstrap/validation, cert paths, run).
 
 **Non-Goals:**
 - No interactive instance console/terminal sessions through the MCP tool surface (exec is batch-only).
 - No OAuth/MCP 2.0 server authz yet (loopback-only transport; revisit if exposed beyond 127.0.0.1).
-- No OpenFGA scoping of the server cert (full-admin cert, documented).
 - No web UI.
 
 ## Decisions
@@ -40,6 +40,9 @@ Mutations return operations from the API. Default: wait for completion (timeout 
 
 ### D4: Certificates
 Server uses its own client cert (paths from config; e.g. a dedicated config directory) minted with `openssl` and trusted via `POST /1.0/certificates` using an existing admin cert. The MCP server never holds a human admin cert.
+
+### D4a: The server cert is scoped via Incus authorization
+Granular permissions are a core requirement (the reason Incus is being adopted). The target Incus server enables fine-grained authorization (`incus auth` — OpenFGA, or Incus 7 scriptlet auth) and the server cert is enrolled in a **restricted auth group** (instances/images/storage/network CRUD; read-only on server/cluster; no certificate mutation). Admin-only surfaces (certificate management, IncusOS system: updates/applications/recovery keys) either use a second, admin-only cert whose usage is flagged in config, or report `forbidden` cleanly. All tools map Incus permission errors (403) to clear tool errors — a scoped cert must degrade gracefully, never crash. Bootstrap docs cover enabling `incus auth` + group membership.
 
 ### D5: Transport and deployment
 Streamable HTTP on 127.0.0.1 (listen address/port configurable; suggested default 8002) via the SDK's HTTP transport; containerized user service (e.g. podman quadlet); registered with an MCP client. Stateless core (2.0) = no session affinity needed.
