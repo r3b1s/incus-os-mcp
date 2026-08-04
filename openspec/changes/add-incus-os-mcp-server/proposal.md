@@ -6,7 +6,7 @@ IncusOS provides a rich REST API (instances, exec, files, images, storage, syste
 
 - New Go MCP server (`incus-os-mcp`) exposing the IncusOS REST API (`/1.0` + IncusOS system API) as typed MCP tools, built on the official MCP Go SDK (v1.7.0+, MCP spec 2026-07-28) and the official `lxc/incus/v7` Go client.
 - Tool surface grouped by resource domain: instances (CRUD, lifecycle, snapshots, backups, rename/move), exec + file push/pull, images (import incl. URL+sha256 and file upload, export, copy, aliases), storage (pools, volumes, volume snapshots/backups, buckets), networks (+ ACLs, zones), profiles + projects, server admin (certificates, operations, server/cluster state, IncusOS system: updates, applications, security/recovery keys).
-- Authentication: dedicated TLS client certificate (minted locally, trusted via `POST /1.0/certificates` using the existing admin cert), scoped to the MCP server and revocable independently.
+- Authentication: dedicated TLS client certificate (minted locally, trusted via `POST /1.0/certificates` using an existing admin cert), scoped to the MCP server and revocable independently; scoped (restricted auth group) by default, full-admin credential supported as an operator choice.
 - Transport: streamable HTTP on 127.0.0.1 (shared server; other clients can attach).
 - Async Incus operations surfaced via operation-aware tools (wait-on-operation by default, with a standalone `wait` tool).
 - **BREAKING**: none for existing systems; new server, new port.
