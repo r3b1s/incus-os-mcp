@@ -52,6 +52,25 @@ func TestFileLoad(t *testing.T) {
 	if c.Server.ListenAddr != "127.0.0.1" {
 		t.Errorf("listen addr = %q, want default", c.Server.ListenAddr)
 	}
+	if got, want := c.TargetCertificatePath(), filepath.Join(dir, "target.crt"); got != want {
+		t.Errorf("target certificate path = %q, want %q", got, want)
+	}
+}
+
+func TestExplicitTargetCertificatePath(t *testing.T) {
+	c := Default()
+	c.Target.CertPath = "/explicit/target.pem"
+	if got := c.TargetCertificatePath(); got != "/explicit/target.pem" {
+		t.Errorf("target certificate path = %q, want explicit path", got)
+	}
+}
+
+func TestDefaultTargetCertificatePathUsesConfiguredLocation(t *testing.T) {
+	t.Setenv("INCUS_MCP_CONFIG", filepath.Join(t.TempDir(), "custom", "config.json"))
+	c := Default()
+	if got, want := c.TargetCertificatePath(), filepath.Join(filepath.Dir(DefaultConfigFile()), "target.crt"); got != want {
+		t.Errorf("target certificate path = %q, want %q", got, want)
+	}
 }
 
 func TestPrecedenceFlagsOverFile(t *testing.T) {

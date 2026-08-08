@@ -59,6 +59,13 @@ func cmdDoctor(args []string) error {
 	if err != nil {
 		return fail("connect", err)
 	}
+	if client.TargetTrust.FirstUse {
+		fmt.Printf("[TOFU] target certificate trusted on first use: path=%s sha256=%s\n",
+			client.TargetTrust.Path, client.TargetTrust.Fingerprint)
+	} else if client.TargetTrust.Path != "" {
+		fmt.Printf("[ OK ] target trust: pinned certificate path=%s sha256=%s\n",
+			client.TargetTrust.Path, client.TargetTrust.Fingerprint)
+	}
 	srv, _, err := client.Server.GetServer()
 	if err != nil {
 		return fail("api", err)

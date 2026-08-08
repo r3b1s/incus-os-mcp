@@ -21,6 +21,9 @@ Incus events websocket and Prometheus metrics are out of the tool surface. Metri
 The IncusOS/Incus host the MCP server talks to (its base URL + TLS credential are config). `target_url`, `target_cert` in config.
 _Avoid_: server, remote, host
 
+**Target trust**:
+The HTTPS target's presented leaf certificate pinned as PEM. An explicit `target.cert_path` wins; otherwise the pin is `target.crt` beside the effective config file. If absent, `run`/`doctor` acquire it by visible trust on first use (path + SHA-256 fingerprint), persist before any Incus API request, and never overwrite it automatically. A mismatch fails closed until the operator deliberately replaces or removes the pin.
+
 **Incus server**:
 Incus's own server-side behavior, when discussed as such (e.g. "the Incus server enforces permissions").
 

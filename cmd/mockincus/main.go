@@ -102,7 +102,9 @@ func main() {
 		Handler: mux,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
-			ClientAuth:   tls.RequireAnyClientCert,
+			// Allow the unauthenticated TLS-only TOFU handshake. HTTP handlers
+			// still require a client certificate for Incus API requests.
+			ClientAuth: tls.RequestClientCert,
 		},
 	}
 

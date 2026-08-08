@@ -82,9 +82,16 @@ incus config trust remove <fingerprint>
 
 ## 4. Wire the config
 
-Set `credential.cert_path` / `credential.key_path` to the minted pair. For a
-self-signed target, also set `target.cert_path` to the target's TLS
-certificate (the server pins it).
+Set `target.url` and point `credential.cert_path` / `credential.key_path` at
+the minted pair. `target.cert_path` is optional. When omitted, the first
+`doctor` or `run` retrieves the target's presented TLS certificate, reports
+its SHA-256 fingerprint, and saves it as `target.crt` beside the config.
+
+That retrieval is trust on first use. Verify the fingerprint out of band when
+needed. The pin is never replaced automatically: after a verified target
+reinstall or certificate rotation, deliberately remove or replace
+`target.crt` before reconnecting. Set `target.cert_path` only to select a
+different pin location; a missing explicit path is acquired the same way.
 
 ## 5. (Optional) full-admin credential
 

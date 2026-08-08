@@ -50,15 +50,19 @@ type Config struct {
 	// InlineMaxBytes is the file-pull inline cap (text inline, binary below
 	// cap inline, larger files returned as staged-file references).
 	InlineMaxBytes int `json:"inline_max_bytes"`
+
+	// configDir is the directory containing the effective config file. It is
+	// runtime-only and anchors conventional companion files such as target.crt.
+	configDir string
 }
 
 // Target holds the Incus endpoint configuration.
 type Target struct {
 	// URL is the base URL of the target, e.g. "https://127.0.0.1:8443".
 	URL string `json:"url"`
-	// CertPath is an optional path to the target's TLS certificate (PEM).
-	// When set, the MCP server pins the target certificate (self-signed or
-	// non-CA-signed targets); when empty, the system CA is used.
+	// CertPath is an optional path to the target's pinned TLS certificate
+	// (PEM). When empty, target.crt beside the effective config file is used
+	// and acquired by trust on first use if it does not exist.
 	CertPath string `json:"cert_path,omitempty"`
 }
 
@@ -91,6 +95,7 @@ func Default() *Config {
 		DefaultProject:     DefaultProject,
 		WaitTimeoutSeconds: DefaultWaitTimeout,
 		InlineMaxBytes:     DefaultInlineMaxSize,
+		configDir:          filepath.Dir(DefaultConfigFile()),
 	}
 }
 
@@ -144,6 +149,7 @@ func (c *Config) LoadFile(path string) error {
 	if err := json.Unmarshal(data, c); err != nil {
 		return fmt.Errorf("parse config file %s: %w", path, err)
 	}
+	c.configDir = filepath.Dir(path)
 	return nil
 }
 
@@ -279,6 +285,19 @@ func (c *Config) Validate() error {
 // ListenAddress returns the resolved "addr:port" listen address.
 func (c *Config) ListenAddress() string {
 	return fmt.Sprintf("%s:%d", c.Server.ListenAddr, c.Server.ListenPort)
+}
+
+// TargetCertificatePath returns the explicit target pin path or the
+// conventional target.crt path beside the effective config file.
+func (c *Config) TargetCertificatePath() string {
+	if c.Target.CertPath != "" {
+		return c.Target.CertPath
+	}
+	dir := c.configDir
+	if dir == "" {
+		dir = filepath.Dir(DefaultConfigFile())
+	}
+	return filepath.Join(dir, "target.crt")
 }
 
 // DefaultConfigFile returns the conventional config path.

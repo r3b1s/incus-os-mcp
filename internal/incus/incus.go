@@ -29,30 +29,69 @@ type Client struct {
 
 	// Config is the resolved configuration (for project/timeout defaults).
 	Config *config.Config
+
+	// TargetTrust describes the server-certificate pin. FirstUse is true only
+	// when this process established and persisted trust.
+	TargetTrust TargetTrust
 }
 
 // New connects to the target using the configured credentials.
 func New(cfg *config.Config) (*Client, error) {
-	primary, err := connect(cfg.Target.URL, cfg.Target.CertPath, cfg.Credential)
+	targetCert, err := resolveTargetCertificate(
+		cfg.Target.URL,
+		cfg.TargetCertificatePath(),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("connect with primary credential: %w", err)
+		return nil, fmt.Errorf("establish target trust: %w", err)
+	}
+
+	primary, err := connect(cfg.Target.URL, targetCert.PEM, cfg.Credential)
+	if err != nil {
+		return nil, targetConnectionError("primary", targetCert.Trust, err)
 	}
 
 	var admin incusclient.InstanceServer
 	if cfg.AdminCredential != nil && cfg.AdminCredential.CertPath != "" {
-		admin, err = connect(cfg.Target.URL, cfg.Target.CertPath, *cfg.AdminCredential)
+		admin, err = connect(cfg.Target.URL, targetCert.PEM, *cfg.AdminCredential)
 		if err != nil {
-			return nil, fmt.Errorf("connect with admin credential: %w", err)
+			return nil, targetConnectionError("admin", targetCert.Trust, err)
 		}
 	}
 
-	return &Client{Server: primary, Admin: admin, Config: cfg}, nil
+	return &Client{
+		Server:      primary,
+		Admin:       admin,
+		Config:      cfg,
+		TargetTrust: targetCert.Trust,
+	}, nil
+}
+
+func targetConnectionError(role string, trust TargetTrust, err error) error {
+	if trust.FirstUse {
+		return fmt.Errorf(
+			"target certificate trusted on first use at %s (SHA-256 %s), then %s connection failed: %w",
+			trust.Path,
+			trust.Fingerprint,
+			role,
+			err,
+		)
+	}
+	if trust.Path != "" {
+		return fmt.Errorf(
+			"connect with %s credential using pinned target certificate at %s (SHA-256 %s): %w",
+			role,
+			trust.Path,
+			trust.Fingerprint,
+			err,
+		)
+	}
+	return fmt.Errorf("connect with %s credential: %w", role, err)
 }
 
 // connect dials the target with a credential. The Incus client expects PEM
-// certificate/key *contents* (not paths), so we read them here. The optional
-// target cert pins the server certificate (self-signed targets).
-func connect(url, targetCertPath string, cred config.Credential) (incusclient.InstanceServer, error) {
+// certificate/key *contents* (not paths), so we read them here. The resolved
+// target certificate pins the server certificate for HTTPS targets.
+func connect(url, targetCertPEM string, cred config.Credential) (incusclient.InstanceServer, error) {
 	certPEM, err := os.ReadFile(cred.CertPath)
 	if err != nil {
 		return nil, fmt.Errorf("read client cert: %w", err)
@@ -60,15 +99,6 @@ func connect(url, targetCertPath string, cred config.Credential) (incusclient.In
 	keyPEM, err := os.ReadFile(cred.KeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("read client key: %w", err)
-	}
-
-	var targetCertPEM string
-	if targetCertPath != "" {
-		b, err := os.ReadFile(targetCertPath)
-		if err != nil {
-			return nil, fmt.Errorf("read target cert: %w", err)
-		}
-		targetCertPEM = string(b)
 	}
 
 	return incusclient.ConnectIncus(url, &incusclient.ConnectionArgs{

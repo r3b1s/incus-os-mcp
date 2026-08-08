@@ -35,7 +35,7 @@ type flags struct {
 func (f *flags) register(fs *flag.FlagSet) {
 	fs.StringVar(&f.configFile, "config", "", "config file path")
 	fs.StringVar(&f.targetURL, "target", "", "IncusOS/Incus base URL")
-	fs.StringVar(&f.targetCert, "target-cert", "", "target TLS certificate path (pin for self-signed targets)")
+	fs.StringVar(&f.targetCert, "target-cert", "", "target TLS certificate pin path (default: target.crt beside config; TOFU if missing)")
 	fs.StringVar(&f.certPath, "cert", "", "client cert path")
 	fs.StringVar(&f.keyPath, "key", "", "client key path")
 	fs.StringVar(&f.adminCert, "admin-cert", "", "admin client cert path")
@@ -98,6 +98,17 @@ func cmdRun(args []string) error {
 	client, err := incus.New(cfg)
 	if err != nil {
 		return fmt.Errorf("target connection failed: %w", err)
+	}
+	if client.TargetTrust.FirstUse {
+		logger.Warn("target certificate trusted on first use",
+			"path", client.TargetTrust.Path,
+			"sha256", client.TargetTrust.Fingerprint,
+		)
+	} else if client.TargetTrust.Path != "" {
+		logger.Debug("using pinned target certificate",
+			"path", client.TargetTrust.Path,
+			"sha256", client.TargetTrust.Fingerprint,
+		)
 	}
 
 	// Build the MCP server.

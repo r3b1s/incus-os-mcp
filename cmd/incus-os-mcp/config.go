@@ -54,6 +54,7 @@ func configInit(args []string) error {
 	}
 	fmt.Printf("wrote default config to %s\n", dest)
 	fmt.Println("edit target.url, credential.cert_path and credential.key_path before running.")
+	fmt.Println("target.crt will be acquired by trust on first use when it is absent.")
 	return nil
 }
 

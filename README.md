@@ -45,8 +45,8 @@ bin/incus-os-mcp cert setup --dir ~/.config/incus-os-mcp
 incus config trust add ~/.config/incus-os-mcp/mcp-server.crt \
   --type client --restricted --projects default
 
-# 5. Edit the config: target.url, target.cert_path (if self-signed),
-#    credential.cert_path, credential.key_path
+# 5. Edit the config: target.url, credential.cert_path, credential.key_path.
+#    target.crt is acquired and pinned automatically on first use.
 
 # 6. Verify the connection
 bin/incus-os-mcp doctor
@@ -62,7 +62,7 @@ Precedence: **flags > environment > config file > defaults**.
 | Key | Env | Flag | Default | Description |
 |---|---|---|---|---|
 | `target.url` | `INCUS_MCP_TARGET_URL` | `--target` | `https://127.0.0.1:8443` | IncusOS/Incus base URL |
-| `target.cert_path` | `INCUS_MCP_TARGET_CERT` | `--target-cert` | *(empty)* | Target TLS cert (pin for self-signed targets); system CA when empty |
+| `target.cert_path` | `INCUS_MCP_TARGET_CERT` | `--target-cert` | `<config-dir>/target.crt` | Optional explicit target pin path; missing pins are acquired by TOFU |
 | `credential.cert_path` | `INCUS_MCP_CERT_PATH` | `--cert` | *(required)* | Client TLS certificate (PEM) |
 | `credential.key_path` | `INCUS_MCP_KEY_PATH` | `--key` | *(required)* | Client TLS key (PEM) |
 | `admin_credential.*` | `INCUS_MCP_ADMIN_*` | `--admin-cert`/`--admin-key` | *(optional)* | Second identity for admin-only surfaces |
@@ -77,8 +77,7 @@ Example config file:
 ```json
 {
   "target": {
-    "url": "https://192.0.2.10:8443",
-    "cert_path": "/etc/incus-os-mcp/target.crt"
+    "url": "https://192.0.2.10:8443"
   },
   "credential": {
     "cert_path": "/etc/incus-os-mcp/client.crt",
@@ -96,6 +95,22 @@ Example config file:
 
 > Placeholder values are used throughout (documentation-only examples; the
 > `192.0.2.0/24` range is reserved for documentation per RFC 5737).
+
+### Target TLS trust (TOFU)
+
+For an HTTPS target with no explicit `target.cert_path`, `run` and `doctor`
+look for `target.crt` beside the effective config file. If it is absent, the
+MCP server performs a TLS handshake solely to retrieve the presented leaf
+certificate, saves it atomically, reports its SHA-256 fingerprint, and then
+reconnects through the normal verified Incus client.
+
+This first retrieval is **trust on first use** and can be intercepted. Verify
+the reported fingerprint out of band when that risk matters. Once the pin
+exists, it is authoritative: the MCP server never refreshes or overwrites it.
+A reinstalled target or rotated certificate therefore fails closed. After
+verifying the replacement certificate independently, deliberately remove or
+replace `target.crt` to establish new trust. An explicit `target.cert_path`
+uses the same acquire-if-absent and never-overwrite behavior at that path.
 
 ## Authentication model
 
@@ -153,7 +168,7 @@ exposed beyond loopback.
 - `cmd/mockincus` — a minimal HTTPS mock of the Incus `/1.0` API for local
   integration testing of the MCP surface without a live target:
   `go run ./cmd/mockincus 127.0.0.1:18443`, then point `--target
-  https://127.0.0.1:18443 --target-cert <mock-cert>` at the server.
+  https://127.0.0.1:18443` at the server; a missing pin is acquired by TOFU.
 
 ## License
 
