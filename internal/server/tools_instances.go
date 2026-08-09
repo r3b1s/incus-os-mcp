@@ -21,7 +21,10 @@ type InstanceListInput struct {
 	Filter string `json:"filter,omitempty" jsonschema:"optional API filter expression"`
 }
 
-func (s *Server) instanceList(ctx context.Context, req *mcp.CallToolRequest, in InstanceListInput) (*mcp.CallToolResult, []api.Instance, error) {
+func (s *Server) instanceList(ctx context.Context, req *mcp.CallToolRequest, in InstanceListInput) (*mcp.CallToolResult, ListOutput[api.Instance], error) {
+	if err := validateProjectScope(in.Project, in.AllProjects); err != nil {
+		return toolError[ListOutput[api.Instance]]("instance_list", err)
+	}
 	var (
 		instances []api.Instance
 		err       error
@@ -32,17 +35,17 @@ func (s *Server) instanceList(ctx context.Context, req *mcp.CallToolRequest, in 
 		if in.AllProjects {
 			instances, err = s.client.Server.GetInstancesAllProjectsWithFilter(api.InstanceTypeAny, []string{in.Filter})
 		} else {
-			instances, err = s.client.Server.GetInstancesWithFilter(api.InstanceTypeAny, []string{in.Filter})
+			instances, err = s.projectServer(in.Project).GetInstancesWithFilter(api.InstanceTypeAny, []string{in.Filter})
 		}
 	} else if in.AllProjects {
 		instances, err = s.client.Server.GetInstancesAllProjects(api.InstanceTypeAny)
 	} else {
-		instances, err = s.client.Server.GetInstances(api.InstanceTypeAny)
+		instances, err = s.projectServer(in.Project).GetInstances(api.InstanceTypeAny)
 	}
 	if err != nil {
-		return toolError[[]api.Instance]("instance_list", err)
+		return toolError[ListOutput[api.Instance]]("instance_list", err)
 	}
-	return result(instances)
+	return result(ListOutput[api.Instance]{Items: instances})
 }
 
 // InstanceGetInput fetches a single instance.
@@ -55,7 +58,7 @@ func (s *Server) instanceGet(ctx context.Context, req *mcp.CallToolRequest, in I
 	if in.Name == "" {
 		return toolError[*api.Instance]("instance_get", errRequired("name"))
 	}
-	inst, _, err := s.client.Server.GetInstance(in.Name)
+	inst, _, err := s.projectServer(in.Project).GetInstance(in.Name)
 	if err != nil {
 		return toolError[*api.Instance]("instance_get", err)
 	}
@@ -121,7 +124,7 @@ func (s *Server) instanceCreate(ctx context.Context, req *mcp.CallToolRequest, i
 		post.Source = api.InstanceSource{Type: "none"}
 	}
 
-	op, err := s.client.Server.CreateInstance(post)
+	op, err := s.projectServer(in.Project).CreateInstance(post)
 	if err != nil {
 		return toolError[*api.Operation]("instance_create", err)
 	}
@@ -145,7 +148,13 @@ func (s *Server) instanceDelete(ctx context.Context, req *mcp.CallToolRequest, i
 	if in.Name == "" {
 		return toolError[*api.Operation]("instance_delete", errRequired("name"))
 	}
-	op, err := s.client.Server.DeleteInstance(in.Name)
+	if in.Force {
+		return toolError[*api.Operation]("instance_delete", errUnsupported("force"))
+	}
+	if in.DeleteSnapshots {
+		return toolError[*api.Operation]("instance_delete", errUnsupported("delete_snapshots"))
+	}
+	op, err := s.projectServer(in.Project).DeleteInstance(in.Name)
 	if err != nil {
 		return toolError[*api.Operation]("instance_delete", err)
 	}
@@ -180,7 +189,7 @@ func (s *Server) instanceStateChange(ctx context.Context, req *mcp.CallToolReque
 		Timeout: in.Timeout,
 	}
 
-	op, err := s.client.Server.UpdateInstanceState(in.Name, put, "")
+	op, err := s.projectServer(in.Project).UpdateInstanceState(in.Name, put, "")
 	if err != nil {
 		return toolError[*api.Operation]("instance_state_change", err)
 	}
@@ -188,6 +197,25 @@ func (s *Server) instanceStateChange(ctx context.Context, req *mcp.CallToolReque
 }
 
 // ---- rename / move ----
+
+// InstanceRenameInput renames an instance in place.
+type InstanceRenameInput struct {
+	Name               string `json:"name" jsonschema:"the current instance name"`
+	NewName            string `json:"new_name" jsonschema:"the new instance name"`
+	Project            string `json:"project,omitempty" jsonschema:"project the instance is in (defaults to configured default)"`
+	WaitTimeoutSeconds int    `json:"wait_timeout_seconds,omitempty" jsonschema:"wait timeout override in seconds"`
+}
+
+func (s *Server) instanceRename(ctx context.Context, req *mcp.CallToolRequest, in InstanceRenameInput) (*mcp.CallToolResult, *api.Operation, error) {
+	if in.Name == "" || in.NewName == "" {
+		return toolError[*api.Operation]("instance_rename", errRequired("name and new_name"))
+	}
+	op, err := s.projectServer(in.Project).RenameInstance(in.Name, api.InstancePost{Name: in.NewName})
+	if err != nil {
+		return toolError[*api.Operation]("instance_rename", err)
+	}
+	return s.waitResult("instance_rename", op, in.WaitTimeoutSeconds)
+}
 
 // InstanceMoveInput renames or moves an instance.
 type InstanceMoveInput struct {
@@ -211,12 +239,23 @@ func (s *Server) instanceMove(ctx context.Context, req *mcp.CallToolRequest, in 
 		return toolError[*api.Operation]("instance_move", errRequired("new_name, pool, or target"))
 	}
 
-	post := api.InstancePost{
-		Name: in.NewName,
-		Pool: in.Pool,
+	server := s.projectServer(in.Project)
+	if in.Target != "" {
+		server = server.UseTarget(in.Target)
 	}
-
-	op, err := s.client.Server.MigrateInstance(in.Name, post)
+	var (
+		op  incusclient.Operation
+		err error
+	)
+	if in.Pool == "" && in.Target == "" {
+		op, err = server.RenameInstance(in.Name, api.InstancePost{Name: in.NewName})
+	} else {
+		name := in.NewName
+		if name == "" {
+			name = in.Name
+		}
+		op, err = server.MigrateInstance(in.Name, api.InstancePost{Name: name, Migration: true, Pool: in.Pool})
+	}
 	if err != nil {
 		return toolError[*api.Operation]("instance_move", err)
 	}
@@ -235,7 +274,7 @@ func (s *Server) instanceState(ctx context.Context, req *mcp.CallToolRequest, in
 	if in.Name == "" {
 		return toolError[*api.InstanceState]("instance_state", errRequired("name"))
 	}
-	state, _, err := s.client.Server.GetInstanceState(in.Name)
+	state, _, err := s.projectServer(in.Project).GetInstanceState(in.Name)
 	if err != nil {
 		return toolError[*api.InstanceState]("instance_state", err)
 	}
@@ -262,7 +301,7 @@ func (s *Server) snapshotCreate(ctx context.Context, req *mcp.CallToolRequest, i
 		Name:     in.SnapshotName,
 		Stateful: in.Stateful,
 	}
-	op, err := s.client.Server.CreateInstanceSnapshot(in.InstanceName, post)
+	op, err := s.projectServer(in.Project).CreateInstanceSnapshot(in.InstanceName, post)
 	if err != nil {
 		return toolError[*api.Operation]("snapshot_create", err)
 	}
@@ -275,15 +314,15 @@ type SnapshotListInput struct {
 	Project      string `json:"project,omitempty" jsonschema:"project the instance is in (defaults to configured default)"`
 }
 
-func (s *Server) snapshotList(ctx context.Context, req *mcp.CallToolRequest, in SnapshotListInput) (*mcp.CallToolResult, []api.InstanceSnapshot, error) {
+func (s *Server) snapshotList(ctx context.Context, req *mcp.CallToolRequest, in SnapshotListInput) (*mcp.CallToolResult, ListOutput[api.InstanceSnapshot], error) {
 	if in.InstanceName == "" {
-		return toolError[[]api.InstanceSnapshot]("snapshot_list", errRequired("instance_name"))
+		return toolError[ListOutput[api.InstanceSnapshot]]("snapshot_list", errRequired("instance_name"))
 	}
-	snaps, err := s.client.Server.GetInstanceSnapshots(in.InstanceName)
+	snaps, err := s.projectServer(in.Project).GetInstanceSnapshots(in.InstanceName)
 	if err != nil {
-		return toolError[[]api.InstanceSnapshot]("snapshot_list", err)
+		return toolError[ListOutput[api.InstanceSnapshot]]("snapshot_list", err)
 	}
-	return result(snaps)
+	return result(ListOutput[api.InstanceSnapshot]{Items: snaps})
 }
 
 // SnapshotDeleteInput deletes a snapshot.
@@ -299,11 +338,31 @@ func (s *Server) snapshotDelete(ctx context.Context, req *mcp.CallToolRequest, i
 	if in.InstanceName == "" || in.SnapshotName == "" {
 		return toolError[*api.Operation]("snapshot_delete", errRequired("instance_name and snapshot_name"))
 	}
-	op, err := s.client.Server.DeleteInstanceSnapshot(in.InstanceName, in.SnapshotName)
+	op, err := s.projectServer(in.Project).DeleteInstanceSnapshot(in.InstanceName, in.SnapshotName)
 	if err != nil {
 		return toolError[*api.Operation]("snapshot_delete", err)
 	}
 	return s.waitResult("snapshot_delete", op, in.WaitTimeoutSeconds)
+}
+
+// SnapshotRenameInput renames an instance snapshot.
+type SnapshotRenameInput struct {
+	InstanceName       string `json:"instance_name" jsonschema:"the instance name"`
+	SnapshotName       string `json:"snapshot_name" jsonschema:"the current snapshot name"`
+	NewName            string `json:"new_name" jsonschema:"the new snapshot name"`
+	Project            string `json:"project,omitempty" jsonschema:"project the instance is in (defaults to configured default)"`
+	WaitTimeoutSeconds int    `json:"wait_timeout_seconds,omitempty" jsonschema:"wait timeout override in seconds"`
+}
+
+func (s *Server) snapshotRename(ctx context.Context, req *mcp.CallToolRequest, in SnapshotRenameInput) (*mcp.CallToolResult, *api.Operation, error) {
+	if in.InstanceName == "" || in.SnapshotName == "" || in.NewName == "" {
+		return toolError[*api.Operation]("snapshot_rename", errRequired("instance_name, snapshot_name, and new_name"))
+	}
+	op, err := s.projectServer(in.Project).RenameInstanceSnapshot(in.InstanceName, in.SnapshotName, api.InstanceSnapshotPost{Name: in.NewName})
+	if err != nil {
+		return toolError[*api.Operation]("snapshot_rename", err)
+	}
+	return s.waitResult("snapshot_rename", op, in.WaitTimeoutSeconds)
 }
 
 // SnapshotRestoreInput restores an instance from a snapshot.
@@ -326,7 +385,7 @@ func (s *Server) snapshotRestore(ctx context.Context, req *mcp.CallToolRequest, 
 		Restore:  in.SnapshotName,
 		DiskOnly: !in.RestoreState,
 	}
-	op, err := s.client.Server.UpdateInstance(in.InstanceName, put, "")
+	op, err := s.projectServer(in.Project).UpdateInstance(in.InstanceName, put, "")
 	if err != nil {
 		return toolError[*api.Operation]("snapshot_restore", err)
 	}
@@ -357,7 +416,7 @@ func (s *Server) backupCreate(ctx context.Context, req *mcp.CallToolRequest, in 
 		OptimizedStorage:     in.Optimized,
 		CompressionAlgorithm: in.Compression,
 	}
-	op, err := s.client.Server.CreateInstanceBackup(in.InstanceName, post)
+	op, err := s.projectServer(in.Project).CreateInstanceBackup(in.InstanceName, post)
 	if err != nil {
 		return toolError[*api.Operation]("backup_create", err)
 	}
@@ -370,15 +429,15 @@ type BackupListInput struct {
 	Project      string `json:"project,omitempty" jsonschema:"project the instance is in (defaults to configured default)"`
 }
 
-func (s *Server) backupList(ctx context.Context, req *mcp.CallToolRequest, in BackupListInput) (*mcp.CallToolResult, []api.InstanceBackup, error) {
+func (s *Server) backupList(ctx context.Context, req *mcp.CallToolRequest, in BackupListInput) (*mcp.CallToolResult, ListOutput[api.InstanceBackup], error) {
 	if in.InstanceName == "" {
-		return toolError[[]api.InstanceBackup]("backup_list", errRequired("instance_name"))
+		return toolError[ListOutput[api.InstanceBackup]]("backup_list", errRequired("instance_name"))
 	}
-	backups, err := s.client.Server.GetInstanceBackups(in.InstanceName)
+	backups, err := s.projectServer(in.Project).GetInstanceBackups(in.InstanceName)
 	if err != nil {
-		return toolError[[]api.InstanceBackup]("backup_list", err)
+		return toolError[ListOutput[api.InstanceBackup]]("backup_list", err)
 	}
-	return result(backups)
+	return result(ListOutput[api.InstanceBackup]{Items: backups})
 }
 
 // BackupDeleteInput deletes a backup.
@@ -394,11 +453,31 @@ func (s *Server) backupDelete(ctx context.Context, req *mcp.CallToolRequest, in 
 	if in.InstanceName == "" || in.BackupName == "" {
 		return toolError[*api.Operation]("backup_delete", errRequired("instance_name and backup_name"))
 	}
-	op, err := s.client.Server.DeleteInstanceBackup(in.InstanceName, in.BackupName)
+	op, err := s.projectServer(in.Project).DeleteInstanceBackup(in.InstanceName, in.BackupName)
 	if err != nil {
 		return toolError[*api.Operation]("backup_delete", err)
 	}
 	return s.waitResult("backup_delete", op, in.WaitTimeoutSeconds)
+}
+
+// BackupRenameInput renames an instance backup.
+type BackupRenameInput struct {
+	InstanceName       string `json:"instance_name" jsonschema:"the instance name"`
+	BackupName         string `json:"backup_name" jsonschema:"the current backup name"`
+	NewName            string `json:"new_name" jsonschema:"the new backup name"`
+	Project            string `json:"project,omitempty" jsonschema:"project the instance is in (defaults to configured default)"`
+	WaitTimeoutSeconds int    `json:"wait_timeout_seconds,omitempty" jsonschema:"wait timeout override in seconds"`
+}
+
+func (s *Server) backupRename(ctx context.Context, req *mcp.CallToolRequest, in BackupRenameInput) (*mcp.CallToolResult, *api.Operation, error) {
+	if in.InstanceName == "" || in.BackupName == "" || in.NewName == "" {
+		return toolError[*api.Operation]("backup_rename", errRequired("instance_name, backup_name, and new_name"))
+	}
+	op, err := s.projectServer(in.Project).RenameInstanceBackup(in.InstanceName, in.BackupName, api.InstanceBackupPost{Name: in.NewName})
+	if err != nil {
+		return toolError[*api.Operation]("backup_rename", err)
+	}
+	return s.waitResult("backup_rename", op, in.WaitTimeoutSeconds)
 }
 
 // BackupExportInput exports a backup artifact.
@@ -432,7 +511,7 @@ func (s *Server) backupExport(ctx context.Context, req *mcp.CallToolRequest, in 
 	}
 	defer f.Close()
 
-	resp, err := s.client.Server.GetInstanceBackupFile(in.InstanceName, in.BackupName, &incusclient.BackupFileRequest{
+	resp, err := s.projectServer(in.Project).GetInstanceBackupFile(in.InstanceName, in.BackupName, &incusclient.BackupFileRequest{
 		BackupFile: f,
 	})
 	if err != nil {
@@ -450,15 +529,19 @@ func (s *Server) registerInstanceTools() {
 	addTool(s, "instance_create", "Create an instance from an image source or empty, with config/devices/profiles.", s.instanceCreate)
 	addTool(s, "instance_delete", "Delete an instance (optionally with snapshots, force).", s.instanceDelete)
 	addTool(s, "instance_state_change", "Start, stop, restart, freeze, or unfreeze an instance.", s.instanceStateChange)
-	addTool(s, "instance_move", "Rename an instance or move it to another pool/cluster member.", s.instanceMove)
+	addTool(s, "instance_rename", "Rename an instance in place.", s.instanceRename)
+	addTool(s, "instance_move", "Move an instance to another pool or cluster member; name-only calls remain supported for compatibility.", s.instanceMove)
 	addTool(s, "instance_state", "Fetch an instance's live state.", s.instanceState)
+	addTool(s, "instance_console_log", "Read a bounded serial console log; use the operator CLI for interactive console attachment.", s.instanceConsoleLog)
 	addTool(s, "snapshot_create", "Create an instance snapshot.", s.snapshotCreate)
 	addTool(s, "snapshot_list", "List an instance's snapshots.", s.snapshotList)
 	addTool(s, "snapshot_delete", "Delete an instance snapshot.", s.snapshotDelete)
+	addTool(s, "snapshot_rename", "Rename an instance snapshot.", s.snapshotRename)
 	addTool(s, "snapshot_restore", "Restore an instance from a snapshot.", s.snapshotRestore)
 	addTool(s, "backup_create", "Create an instance backup.", s.backupCreate)
 	addTool(s, "backup_list", "List an instance's backups.", s.backupList)
 	addTool(s, "backup_delete", "Delete an instance backup.", s.backupDelete)
+	addTool(s, "backup_rename", "Rename an instance backup.", s.backupRename)
 	addTool(s, "backup_export", "Export an instance backup to a file on the MCP server host.", s.backupExport)
 }
 
@@ -480,7 +563,7 @@ func (s *Server) waitResult(op string, opHandle interface {
 			return
 		}
 		cur := opHandle.Get()
-		done <- &cur
+		done <- mcpOperation(&cur)
 	}()
 
 	select {
@@ -490,6 +573,19 @@ func (s *Server) waitResult(op string, opHandle interface {
 		return toolError[*api.Operation](op, err)
 	case <-time.After(timeout):
 		cur := opHandle.Get()
-		return result(&api.Operation{ID: cur.ID, Status: "running"})
+		return result(mcpOperation(&api.Operation{ID: cur.ID, Status: "running"}))
 	}
+}
+
+// mcpOperation makes the Incus operation representation compatible with the
+// generated MCP schema. Incus omits Resources when an operation has none, but
+// MCP validates that field as an object rather than accepting JSON null.
+func mcpOperation(operation *api.Operation) *api.Operation {
+	if operation.Resources == nil {
+		operation.Resources = map[string][]string{}
+	}
+	if operation.Metadata == nil {
+		operation.Metadata = map[string]any{}
+	}
+	return operation
 }

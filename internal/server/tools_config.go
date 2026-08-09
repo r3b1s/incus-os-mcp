@@ -14,12 +14,12 @@ type ProfileListInput struct {
 	Project string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 }
 
-func (s *Server) profileList(ctx context.Context, req *mcp.CallToolRequest, in ProfileListInput) (*mcp.CallToolResult, []api.Profile, error) {
-	profiles, err := s.client.Server.GetProfiles()
+func (s *Server) profileList(ctx context.Context, req *mcp.CallToolRequest, in ProfileListInput) (*mcp.CallToolResult, ListOutput[api.Profile], error) {
+	profiles, err := s.projectServer(in.Project).GetProfiles()
 	if err != nil {
-		return toolError[[]api.Profile]("profile_list", err)
+		return toolError[ListOutput[api.Profile]]("profile_list", err)
 	}
-	return result(profiles)
+	return result(ListOutput[api.Profile]{Items: profiles})
 }
 
 // ProfileGetInput fetches a profile.
@@ -32,7 +32,7 @@ func (s *Server) profileGet(ctx context.Context, req *mcp.CallToolRequest, in Pr
 	if in.Name == "" {
 		return toolError[*api.Profile]("profile_get", errRequired("name"))
 	}
-	profile, _, err := s.client.Server.GetProfile(in.Name)
+	profile, _, err := s.projectServer(in.Project).GetProfile(in.Name)
 	if err != nil {
 		return toolError[*api.Profile]("profile_get", err)
 	}
@@ -52,7 +52,7 @@ func (s *Server) profileCreate(ctx context.Context, req *mcp.CallToolRequest, in
 	if in.Name == "" {
 		return toolError[string]("profile_create", errRequired("name"))
 	}
-	err := s.client.Server.CreateProfile(api.ProfilesPost{
+	err := s.projectServer(in.Project).CreateProfile(api.ProfilesPost{
 		Name: in.Name,
 		ProfilePut: api.ProfilePut{
 			Description: in.Description,
@@ -79,11 +79,12 @@ func (s *Server) profileUpdate(ctx context.Context, req *mcp.CallToolRequest, in
 	if in.Name == "" {
 		return toolError[string]("profile_update", errRequired("name"))
 	}
-	_, etag, err := s.client.Server.GetProfile(in.Name)
+	server := s.projectServer(in.Project)
+	_, etag, err := server.GetProfile(in.Name)
 	if err != nil {
 		return toolError[string]("profile_update", err)
 	}
-	if err := s.client.Server.UpdateProfile(in.Name, api.ProfilePut{
+	if err := server.UpdateProfile(in.Name, api.ProfilePut{
 		Description: in.Description,
 		Config:      in.Config,
 		Devices:     in.Devices,
@@ -104,7 +105,7 @@ func (s *Server) profileRename(ctx context.Context, req *mcp.CallToolRequest, in
 	if in.Name == "" || in.NewName == "" {
 		return toolError[string]("profile_rename", errRequired("name and new_name"))
 	}
-	if err := s.client.Server.RenameProfile(in.Name, api.ProfilePost{Name: in.NewName}); err != nil {
+	if err := s.projectServer(in.Project).RenameProfile(in.Name, api.ProfilePost{Name: in.NewName}); err != nil {
 		return toolError[string]("profile_rename", err)
 	}
 	return result("profile renamed: " + in.Name + " -> " + in.NewName)
@@ -123,11 +124,12 @@ func (s *Server) profileCopy(ctx context.Context, req *mcp.CallToolRequest, in P
 	}
 	// Copy is a rename with the source name preserved: the Incus API copies
 	// a profile by POSTing to /profiles with the source as a name override.
-	src, _, err := s.client.Server.GetProfile(in.Name)
+	server := s.projectServer(in.Project)
+	src, _, err := server.GetProfile(in.Name)
 	if err != nil {
 		return toolError[string]("profile_copy", err)
 	}
-	err = s.client.Server.CreateProfile(api.ProfilesPost{
+	err = server.CreateProfile(api.ProfilesPost{
 		Name: in.NewName,
 		ProfilePut: api.ProfilePut{
 			Description: src.Description,
@@ -151,7 +153,7 @@ func (s *Server) profileDelete(ctx context.Context, req *mcp.CallToolRequest, in
 	if in.Name == "" {
 		return toolError[string]("profile_delete", errRequired("name"))
 	}
-	if err := s.client.Server.DeleteProfile(in.Name); err != nil {
+	if err := s.projectServer(in.Project).DeleteProfile(in.Name); err != nil {
 		return toolError[string]("profile_delete", err)
 	}
 	return result("profile deleted: " + in.Name)
@@ -162,12 +164,12 @@ func (s *Server) profileDelete(ctx context.Context, req *mcp.CallToolRequest, in
 // ProjectListInput lists projects.
 type ProjectListInput struct{}
 
-func (s *Server) projectList(ctx context.Context, req *mcp.CallToolRequest, in ProjectListInput) (*mcp.CallToolResult, []api.Project, error) {
+func (s *Server) projectList(ctx context.Context, req *mcp.CallToolRequest, in ProjectListInput) (*mcp.CallToolResult, ListOutput[api.Project], error) {
 	projects, err := s.client.Server.GetProjects()
 	if err != nil {
-		return toolError[[]api.Project]("project_list", err)
+		return toolError[ListOutput[api.Project]]("project_list", err)
 	}
-	return result(projects)
+	return result(ListOutput[api.Project]{Items: projects})
 }
 
 // ProjectGetInput fetches a project.

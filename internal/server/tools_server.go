@@ -51,6 +51,10 @@ func (s *Server) registerServerTools() {
 	addTool(s, "server_list_certificates", "List trusted client certificates. Admin-only surface.", s.serverListCertificates)
 	addTool(s, "server_add_certificate", "Add a client certificate to the trust store. Admin-only surface.", s.serverAddCertificate)
 	addTool(s, "server_delete_certificate", "Remove a client certificate from the trust store. Admin-only surface.", s.serverDeleteCertificate)
+	addTool(s, "cluster_member_list", "List cluster members.", s.clusterMemberList)
+	addTool(s, "cluster_member_get", "Fetch a cluster member's metadata.", s.clusterMemberGet)
+	addTool(s, "cluster_member_state", "Fetch a cluster member's evacuation state.", s.clusterMemberState)
+	addTool(s, "cluster_member_state_change", "Evacuate or restore a cluster member.", s.clusterMemberStateChange)
 }
 
 // ---- operations ----
@@ -68,24 +72,25 @@ type ServerListOperationsInput struct {
 	Project string `json:"project,omitempty" jsonschema:"project to list operations for (defaults to configured default)"`
 }
 
-func (s *Server) serverListOperations(ctx context.Context, req *mcp.CallToolRequest, in ServerListOperationsInput) (*mcp.CallToolResult, []api.Operation, error) {
-	ops, err := s.client.Server.GetOperations()
+func (s *Server) serverListOperations(ctx context.Context, req *mcp.CallToolRequest, in ServerListOperationsInput) (*mcp.CallToolResult, ListOutput[api.Operation], error) {
+	ops, err := s.projectServer(in.Project).GetOperations()
 	if err != nil {
-		return toolError[[]api.Operation]("server_list_operations", err)
+		return toolError[ListOutput[api.Operation]]("server_list_operations", err)
 	}
-	return result(ops)
+	return result(ListOutput[api.Operation]{Items: ops})
 }
 
 // ServerGetOperationInput fetches one operation.
 type ServerGetOperationInput struct {
 	OperationID string `json:"operation_id" jsonschema:"the operation ID"`
+	Project     string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 }
 
 func (s *Server) serverGetOperation(ctx context.Context, req *mcp.CallToolRequest, in ServerGetOperationInput) (*mcp.CallToolResult, *api.Operation, error) {
 	if in.OperationID == "" {
 		return toolError[*api.Operation]("server_get_operation", errRequired("operation_id"))
 	}
-	op, _, err := s.client.Server.GetOperation(in.OperationID)
+	op, _, err := s.projectServer(in.Project).GetOperation(in.OperationID)
 	if err != nil {
 		return toolError[*api.Operation]("server_get_operation", err)
 	}
@@ -95,6 +100,7 @@ func (s *Server) serverGetOperation(ctx context.Context, req *mcp.CallToolReques
 // ServerWaitOperationInput waits on an operation.
 type ServerWaitOperationInput struct {
 	OperationRef
+	Project string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 	// TimeoutSeconds overrides the configured wait timeout.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty" jsonschema:"wait timeout override in seconds (defaults to configured wait_timeout_seconds)"`
 }
@@ -120,11 +126,12 @@ func (s *Server) serverWaitOperation(ctx context.Context, req *mcp.CallToolReque
 	// the "already done" fast path), then GetOperationWait blocks server-side
 	// with the requested timeout. A still-running operation comes back with
 	// status "running" (not an error).
-	if _, _, err := s.client.Server.GetOperation(uuid); err != nil {
+	server := s.projectServer(in.Project)
+	if _, _, err := server.GetOperation(uuid); err != nil {
 		return toolError[*api.Operation]("server_wait_operation", err)
 	}
 
-	final, _, err := s.client.Server.GetOperationWait(uuid, int(timeout.Seconds()))
+	final, _, err := server.GetOperationWait(uuid, int(timeout.Seconds()))
 	if err != nil {
 		return toolError[*api.Operation]("server_wait_operation", err)
 	}
@@ -147,16 +154,16 @@ type CertificateInput struct {
 	Restricted bool `json:"restricted,omitempty" jsonschema:"whether the certificate is restricted to the given projects"`
 }
 
-func (s *Server) serverListCertificates(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, []api.Certificate, error) {
+func (s *Server) serverListCertificates(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, ListOutput[api.Certificate], error) {
 	admin, err := s.client.AdminClient()
 	if err != nil {
-		return toolError[[]api.Certificate]("server_list_certificates", err)
+		return toolError[ListOutput[api.Certificate]]("server_list_certificates", err)
 	}
 	certs, err := admin.GetCertificates()
 	if err != nil {
-		return toolError[[]api.Certificate]("server_list_certificates", err)
+		return toolError[ListOutput[api.Certificate]]("server_list_certificates", err)
 	}
-	return result(certs)
+	return result(ListOutput[api.Certificate]{Items: certs})
 }
 
 func (s *Server) serverAddCertificate(ctx context.Context, req *mcp.CallToolRequest, in CertificateInput) (*mcp.CallToolResult, string, error) {

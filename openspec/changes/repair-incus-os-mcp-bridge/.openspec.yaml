@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-08
+goal: Provide a reliable API-only control plane for disposable openSUSE MicroOS
+  GitOps tests without modifying the IncusOS appliance.

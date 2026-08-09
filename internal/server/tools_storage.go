@@ -12,12 +12,12 @@ import (
 // StoragePoolListInput lists pools.
 type StoragePoolListInput struct{}
 
-func (s *Server) storagePoolList(ctx context.Context, req *mcp.CallToolRequest, in StoragePoolListInput) (*mcp.CallToolResult, []api.StoragePool, error) {
+func (s *Server) storagePoolList(ctx context.Context, req *mcp.CallToolRequest, in StoragePoolListInput) (*mcp.CallToolResult, ListOutput[api.StoragePool], error) {
 	pools, err := s.client.Server.GetStoragePools()
 	if err != nil {
-		return toolError[[]api.StoragePool]("storage_pool_list", err)
+		return toolError[ListOutput[api.StoragePool]]("storage_pool_list", err)
 	}
-	return result(pools)
+	return result(ListOutput[api.StoragePool]{Items: pools})
 }
 
 // StoragePoolCreateInput creates a pool.
@@ -86,15 +86,15 @@ type StorageVolumeListInput struct {
 	Project string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 }
 
-func (s *Server) storageVolumeList(ctx context.Context, req *mcp.CallToolRequest, in StorageVolumeListInput) (*mcp.CallToolResult, []api.StorageVolume, error) {
+func (s *Server) storageVolumeList(ctx context.Context, req *mcp.CallToolRequest, in StorageVolumeListInput) (*mcp.CallToolResult, ListOutput[api.StorageVolume], error) {
 	if in.Pool == "" {
-		return toolError[[]api.StorageVolume]("storage_volume_list", errRequired("pool"))
+		return toolError[ListOutput[api.StorageVolume]]("storage_volume_list", errRequired("pool"))
 	}
-	vols, err := s.client.Server.GetStoragePoolVolumes(in.Pool)
+	vols, err := s.projectServer(in.Project).GetStoragePoolVolumes(in.Pool)
 	if err != nil {
-		return toolError[[]api.StorageVolume]("storage_volume_list", err)
+		return toolError[ListOutput[api.StorageVolume]]("storage_volume_list", err)
 	}
-	return result(vols)
+	return result(ListOutput[api.StorageVolume]{Items: vols})
 }
 
 // StorageVolumeCreateInput creates a custom volume.
@@ -114,10 +114,11 @@ func (s *Server) storageVolumeCreate(ctx context.Context, req *mcp.CallToolReque
 	if ctype == "" {
 		ctype = "filesystem"
 	}
-	err := s.client.Server.CreateStoragePoolVolume(in.Pool, api.StorageVolumesPost{
+	err := s.projectServer(in.Project).CreateStoragePoolVolume(in.Pool, api.StorageVolumesPost{
 		Name:             in.Name,
 		StorageVolumePut: api.StorageVolumePut{Config: in.Config},
-		Type:             ctype,
+		Type:             "custom",
+		ContentType:      ctype,
 	})
 	if err != nil {
 		return toolError[string]("storage_volume_create", err)
@@ -127,9 +128,10 @@ func (s *Server) storageVolumeCreate(ctx context.Context, req *mcp.CallToolReque
 
 // StorageVolumeUpdateInput updates a volume.
 type StorageVolumeUpdateInput struct {
-	Pool   string            `json:"pool" jsonschema:"the storage pool"`
-	Name   string            `json:"name" jsonschema:"the volume name"`
-	Config map[string]string `json:"config,omitempty" jsonschema:"volume configuration to apply"`
+	Pool    string            `json:"pool" jsonschema:"the storage pool"`
+	Project string            `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
+	Name    string            `json:"name" jsonschema:"the volume name"`
+	Config  map[string]string `json:"config,omitempty" jsonschema:"volume configuration to apply"`
 	// Size resizes the volume (e.g. "20GiB").
 	Size string `json:"size,omitempty" jsonschema:"new size (e.g. 20GiB)"`
 }
@@ -138,7 +140,8 @@ func (s *Server) storageVolumeUpdate(ctx context.Context, req *mcp.CallToolReque
 	if in.Pool == "" || in.Name == "" {
 		return toolError[string]("storage_volume_update", errRequired("pool and name"))
 	}
-	_, etag, err := s.client.Server.GetStoragePoolVolume(in.Pool, "custom", in.Name)
+	server := s.projectServer(in.Project)
+	_, etag, err := server.GetStoragePoolVolume(in.Pool, "custom", in.Name)
 	if err != nil {
 		return toolError[string]("storage_volume_update", err)
 	}
@@ -149,7 +152,7 @@ func (s *Server) storageVolumeUpdate(ctx context.Context, req *mcp.CallToolReque
 		}
 		put.Config["size"] = in.Size
 	}
-	if err := s.client.Server.UpdateStoragePoolVolume(in.Pool, "custom", in.Name, put, etag); err != nil {
+	if err := server.UpdateStoragePoolVolume(in.Pool, "custom", in.Name, put, etag); err != nil {
 		return toolError[string]("storage_volume_update", err)
 	}
 	return result("volume updated: " + in.Name)
@@ -157,30 +160,27 @@ func (s *Server) storageVolumeUpdate(ctx context.Context, req *mcp.CallToolReque
 
 // StorageVolumeDeleteInput deletes a volume.
 type StorageVolumeDeleteInput struct {
-	Pool string `json:"pool" jsonschema:"the storage pool"`
-	Name string `json:"name" jsonschema:"the volume name"`
+	Pool    string `json:"pool" jsonschema:"the storage pool"`
+	Project string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
+	Name    string `json:"name" jsonschema:"the volume name"`
 }
 
 func (s *Server) storageVolumeDelete(ctx context.Context, req *mcp.CallToolRequest, in StorageVolumeDeleteInput) (*mcp.CallToolResult, string, error) {
 	if in.Pool == "" || in.Name == "" {
 		return toolError[string]("storage_volume_delete", errRequired("pool and name"))
 	}
-	if err := s.client.Server.DeleteStoragePoolVolume(in.Pool, "custom", in.Name); err != nil {
+	if err := s.projectServer(in.Project).DeleteStoragePoolVolume(in.Pool, "custom", in.Name); err != nil {
 		return toolError[string]("storage_volume_delete", err)
 	}
 	return result("volume deleted: " + in.Name)
 }
 
-// StorageVolumeRenameInput renames or moves a volume.
+// StorageVolumeRenameInput renames a volume in place.
 type StorageVolumeRenameInput struct {
 	Pool    string `json:"pool" jsonschema:"the source storage pool"`
 	Project string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 	Name    string `json:"name" jsonschema:"the current volume name"`
 	NewName string `json:"new_name" jsonschema:"the new volume name"`
-	// TargetPool moves the volume to a different pool.
-	TargetPool string `json:"target_pool,omitempty" jsonschema:"target pool for a move"`
-
-	WaitTimeoutSeconds int `json:"wait_timeout_seconds,omitempty" jsonschema:"wait timeout override in seconds"`
 }
 
 func (s *Server) storageVolumeRename(ctx context.Context, req *mcp.CallToolRequest, in StorageVolumeRenameInput) (*mcp.CallToolResult, *api.Operation, error) {
@@ -188,11 +188,10 @@ func (s *Server) storageVolumeRename(ctx context.Context, req *mcp.CallToolReque
 		return toolError[*api.Operation]("storage_volume_rename", errRequired("pool, name, and new_name"))
 	}
 	post := api.StorageVolumePost{Name: in.NewName}
-	op, err := s.client.Server.MigrateStoragePoolVolume(in.Pool, post)
-	if err != nil {
+	if err := s.projectServer(in.Project).RenameStoragePoolVolume(in.Pool, "custom", in.Name, post); err != nil {
 		return toolError[*api.Operation]("storage_volume_rename", err)
 	}
-	return s.waitResult("storage_volume_rename", op, in.WaitTimeoutSeconds)
+	return result(&api.Operation{Status: "Success"})
 }
 
 // ---- volume snapshots ----
@@ -200,6 +199,7 @@ func (s *Server) storageVolumeRename(ctx context.Context, req *mcp.CallToolReque
 // StorageVolumeSnapshotCreateInput snapshots a volume.
 type StorageVolumeSnapshotCreateInput struct {
 	Pool         string `json:"pool" jsonschema:"the storage pool"`
+	Project      string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 	VolumeName   string `json:"volume_name" jsonschema:"the volume name"`
 	SnapshotName string `json:"snapshot_name" jsonschema:"the snapshot name"`
 
@@ -210,7 +210,7 @@ func (s *Server) storageVolumeSnapshotCreate(ctx context.Context, req *mcp.CallT
 	if in.Pool == "" || in.VolumeName == "" || in.SnapshotName == "" {
 		return toolError[*api.Operation]("storage_volume_snapshot_create", errRequired("pool, volume_name, and snapshot_name"))
 	}
-	op, err := s.client.Server.CreateStoragePoolVolumeSnapshot(in.Pool, "custom", in.VolumeName, api.StorageVolumeSnapshotsPost{
+	op, err := s.projectServer(in.Project).CreateStoragePoolVolumeSnapshot(in.Pool, "custom", in.VolumeName, api.StorageVolumeSnapshotsPost{
 		Name: in.SnapshotName,
 	})
 	if err != nil {
@@ -222,23 +222,25 @@ func (s *Server) storageVolumeSnapshotCreate(ctx context.Context, req *mcp.CallT
 // StorageVolumeSnapshotListInput lists volume snapshots.
 type StorageVolumeSnapshotListInput struct {
 	Pool       string `json:"pool" jsonschema:"the storage pool"`
+	Project    string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 	VolumeName string `json:"volume_name" jsonschema:"the volume name"`
 }
 
-func (s *Server) storageVolumeSnapshotList(ctx context.Context, req *mcp.CallToolRequest, in StorageVolumeSnapshotListInput) (*mcp.CallToolResult, []api.StorageVolumeSnapshot, error) {
+func (s *Server) storageVolumeSnapshotList(ctx context.Context, req *mcp.CallToolRequest, in StorageVolumeSnapshotListInput) (*mcp.CallToolResult, ListOutput[api.StorageVolumeSnapshot], error) {
 	if in.Pool == "" || in.VolumeName == "" {
-		return toolError[[]api.StorageVolumeSnapshot]("storage_volume_snapshot_list", errRequired("pool and volume_name"))
+		return toolError[ListOutput[api.StorageVolumeSnapshot]]("storage_volume_snapshot_list", errRequired("pool and volume_name"))
 	}
-	snaps, err := s.client.Server.GetStoragePoolVolumeSnapshots(in.Pool, "custom", in.VolumeName)
+	snaps, err := s.projectServer(in.Project).GetStoragePoolVolumeSnapshots(in.Pool, "custom", in.VolumeName)
 	if err != nil {
-		return toolError[[]api.StorageVolumeSnapshot]("storage_volume_snapshot_list", err)
+		return toolError[ListOutput[api.StorageVolumeSnapshot]]("storage_volume_snapshot_list", err)
 	}
-	return result(snaps)
+	return result(ListOutput[api.StorageVolumeSnapshot]{Items: snaps})
 }
 
 // StorageVolumeSnapshotDeleteInput deletes a volume snapshot.
 type StorageVolumeSnapshotDeleteInput struct {
 	Pool         string `json:"pool" jsonschema:"the storage pool"`
+	Project      string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 	VolumeName   string `json:"volume_name" jsonschema:"the volume name"`
 	SnapshotName string `json:"snapshot_name" jsonschema:"the snapshot name"`
 
@@ -249,7 +251,7 @@ func (s *Server) storageVolumeSnapshotDelete(ctx context.Context, req *mcp.CallT
 	if in.Pool == "" || in.VolumeName == "" || in.SnapshotName == "" {
 		return toolError[*api.Operation]("storage_volume_snapshot_delete", errRequired("pool, volume_name, and snapshot_name"))
 	}
-	op, err := s.client.Server.DeleteStoragePoolVolumeSnapshot(in.Pool, "custom", in.VolumeName, in.SnapshotName)
+	op, err := s.projectServer(in.Project).DeleteStoragePoolVolumeSnapshot(in.Pool, "custom", in.VolumeName, in.SnapshotName)
 	if err != nil {
 		return toolError[*api.Operation]("storage_volume_snapshot_delete", err)
 	}
@@ -259,6 +261,7 @@ func (s *Server) storageVolumeSnapshotDelete(ctx context.Context, req *mcp.CallT
 // StorageVolumeSnapshotRestoreInput restores a volume from a snapshot.
 type StorageVolumeSnapshotRestoreInput struct {
 	Pool         string `json:"pool" jsonschema:"the storage pool"`
+	Project      string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 	VolumeName   string `json:"volume_name" jsonschema:"the volume name"`
 	SnapshotName string `json:"snapshot_name" jsonschema:"the snapshot name"`
 
@@ -274,11 +277,12 @@ func (s *Server) storageVolumeSnapshotRestore(ctx context.Context, req *mcp.Call
 	// same call the official `incus storage volume snapshot restore` CLI
 	// makes (cmd/incus/storage_volume_snapshot.go). The client gates it on
 	// the storage_api_volume_snapshots extension.
-	_, etag, err := s.client.Server.GetStoragePoolVolume(in.Pool, "custom", in.VolumeName)
+	server := s.projectServer(in.Project)
+	_, etag, err := server.GetStoragePoolVolume(in.Pool, "custom", in.VolumeName)
 	if err != nil {
 		return toolError[*api.Operation]("storage_volume_snapshot_restore", err)
 	}
-	if err := s.client.Server.UpdateStoragePoolVolume(in.Pool, "custom", in.VolumeName, api.StorageVolumePut{
+	if err := server.UpdateStoragePoolVolume(in.Pool, "custom", in.VolumeName, api.StorageVolumePut{
 		Restore: in.SnapshotName,
 	}, etag); err != nil {
 		return toolError[*api.Operation]("storage_volume_snapshot_restore", err)
@@ -293,6 +297,7 @@ func (s *Server) storageVolumeSnapshotRestore(ctx context.Context, req *mcp.Call
 // StorageVolumeBackupCreateInput backs up a volume.
 type StorageVolumeBackupCreateInput struct {
 	Pool       string `json:"pool" jsonschema:"the storage pool"`
+	Project    string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 	VolumeName string `json:"volume_name" jsonschema:"the volume name"`
 	BackupName string `json:"backup_name" jsonschema:"the backup name"`
 
@@ -303,7 +308,7 @@ func (s *Server) storageVolumeBackupCreate(ctx context.Context, req *mcp.CallToo
 	if in.Pool == "" || in.VolumeName == "" || in.BackupName == "" {
 		return toolError[*api.Operation]("storage_volume_backup_create", errRequired("pool, volume_name, and backup_name"))
 	}
-	op, err := s.client.Server.CreateStorageVolumeBackup(in.Pool, in.VolumeName, api.StorageVolumeBackupsPost{
+	op, err := s.projectServer(in.Project).CreateStorageVolumeBackup(in.Pool, in.VolumeName, api.StorageVolumeBackupsPost{
 		Name: in.BackupName,
 	})
 	if err != nil {
@@ -315,23 +320,25 @@ func (s *Server) storageVolumeBackupCreate(ctx context.Context, req *mcp.CallToo
 // StorageVolumeBackupListInput lists volume backups.
 type StorageVolumeBackupListInput struct {
 	Pool       string `json:"pool" jsonschema:"the storage pool"`
+	Project    string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 	VolumeName string `json:"volume_name" jsonschema:"the volume name"`
 }
 
-func (s *Server) storageVolumeBackupList(ctx context.Context, req *mcp.CallToolRequest, in StorageVolumeBackupListInput) (*mcp.CallToolResult, []api.StorageVolumeBackup, error) {
+func (s *Server) storageVolumeBackupList(ctx context.Context, req *mcp.CallToolRequest, in StorageVolumeBackupListInput) (*mcp.CallToolResult, ListOutput[api.StorageVolumeBackup], error) {
 	if in.Pool == "" || in.VolumeName == "" {
-		return toolError[[]api.StorageVolumeBackup]("storage_volume_backup_list", errRequired("pool and volume_name"))
+		return toolError[ListOutput[api.StorageVolumeBackup]]("storage_volume_backup_list", errRequired("pool and volume_name"))
 	}
-	backups, err := s.client.Server.GetStorageVolumeBackups(in.Pool, in.VolumeName)
+	backups, err := s.projectServer(in.Project).GetStorageVolumeBackups(in.Pool, in.VolumeName)
 	if err != nil {
-		return toolError[[]api.StorageVolumeBackup]("storage_volume_backup_list", err)
+		return toolError[ListOutput[api.StorageVolumeBackup]]("storage_volume_backup_list", err)
 	}
-	return result(backups)
+	return result(ListOutput[api.StorageVolumeBackup]{Items: backups})
 }
 
 // StorageVolumeBackupDeleteInput deletes a volume backup.
 type StorageVolumeBackupDeleteInput struct {
 	Pool       string `json:"pool" jsonschema:"the storage pool"`
+	Project    string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 	VolumeName string `json:"volume_name" jsonschema:"the volume name"`
 	BackupName string `json:"backup_name" jsonschema:"the backup name"`
 
@@ -342,7 +349,7 @@ func (s *Server) storageVolumeBackupDelete(ctx context.Context, req *mcp.CallToo
 	if in.Pool == "" || in.VolumeName == "" || in.BackupName == "" {
 		return toolError[*api.Operation]("storage_volume_backup_delete", errRequired("pool, volume_name, and backup_name"))
 	}
-	op, err := s.client.Server.DeleteStorageVolumeBackup(in.Pool, in.VolumeName, in.BackupName)
+	op, err := s.projectServer(in.Project).DeleteStorageVolumeBackup(in.Pool, in.VolumeName, in.BackupName)
 	if err != nil {
 		return toolError[*api.Operation]("storage_volume_backup_delete", err)
 	}
@@ -353,25 +360,27 @@ func (s *Server) storageVolumeBackupDelete(ctx context.Context, req *mcp.CallToo
 
 // StorageBucketListInput lists buckets.
 type StorageBucketListInput struct {
-	Pool string `json:"pool" jsonschema:"the storage pool"`
+	Pool    string `json:"pool" jsonschema:"the storage pool"`
+	Project string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 }
 
-func (s *Server) storageBucketList(ctx context.Context, req *mcp.CallToolRequest, in StorageBucketListInput) (*mcp.CallToolResult, []api.StorageBucket, error) {
+func (s *Server) storageBucketList(ctx context.Context, req *mcp.CallToolRequest, in StorageBucketListInput) (*mcp.CallToolResult, ListOutput[api.StorageBucket], error) {
 	if in.Pool == "" {
-		return toolError[[]api.StorageBucket]("storage_bucket_list", errRequired("pool"))
+		return toolError[ListOutput[api.StorageBucket]]("storage_bucket_list", errRequired("pool"))
 	}
-	buckets, err := s.client.Server.GetStoragePoolBuckets(in.Pool)
+	buckets, err := s.projectServer(in.Project).GetStoragePoolBuckets(in.Pool)
 	if err != nil {
-		return toolError[[]api.StorageBucket]("storage_bucket_list", err)
+		return toolError[ListOutput[api.StorageBucket]]("storage_bucket_list", err)
 	}
-	return result(buckets)
+	return result(ListOutput[api.StorageBucket]{Items: buckets})
 }
 
 // StorageBucketCreateInput creates a bucket.
 type StorageBucketCreateInput struct {
-	Pool   string            `json:"pool" jsonschema:"the storage pool"`
-	Name   string            `json:"name" jsonschema:"the bucket name"`
-	Config map[string]string `json:"config,omitempty" jsonschema:"bucket configuration"`
+	Pool    string            `json:"pool" jsonschema:"the storage pool"`
+	Project string            `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
+	Name    string            `json:"name" jsonschema:"the bucket name"`
+	Config  map[string]string `json:"config,omitempty" jsonschema:"bucket configuration"`
 }
 
 // StorageBucketCreateOutput carries the created bucket key (access/secret).
@@ -387,7 +396,7 @@ func (s *Server) storageBucketCreate(ctx context.Context, req *mcp.CallToolReque
 	if in.Pool == "" || in.Name == "" {
 		return toolError[StorageBucketCreateOutput]("storage_bucket_create", errRequired("pool and name"))
 	}
-	key, err := s.client.Server.CreateStoragePoolBucket(in.Pool, api.StorageBucketsPost{
+	key, err := s.projectServer(in.Project).CreateStoragePoolBucket(in.Pool, api.StorageBucketsPost{
 		Name:             in.Name,
 		StorageBucketPut: api.StorageBucketPut{Config: in.Config},
 	})
@@ -404,15 +413,16 @@ func (s *Server) storageBucketCreate(ctx context.Context, req *mcp.CallToolReque
 
 // StorageBucketDeleteInput deletes a bucket.
 type StorageBucketDeleteInput struct {
-	Pool string `json:"pool" jsonschema:"the storage pool"`
-	Name string `json:"name" jsonschema:"the bucket name"`
+	Pool    string `json:"pool" jsonschema:"the storage pool"`
+	Project string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
+	Name    string `json:"name" jsonschema:"the bucket name"`
 }
 
 func (s *Server) storageBucketDelete(ctx context.Context, req *mcp.CallToolRequest, in StorageBucketDeleteInput) (*mcp.CallToolResult, string, error) {
 	if in.Pool == "" || in.Name == "" {
 		return toolError[string]("storage_bucket_delete", errRequired("pool and name"))
 	}
-	if err := s.client.Server.DeleteStoragePoolBucket(in.Pool, in.Name); err != nil {
+	if err := s.projectServer(in.Project).DeleteStoragePoolBucket(in.Pool, in.Name); err != nil {
 		return toolError[string]("storage_bucket_delete", err)
 	}
 	return result("bucket deleted: " + in.Name)
@@ -421,6 +431,7 @@ func (s *Server) storageBucketDelete(ctx context.Context, req *mcp.CallToolReque
 // StorageBucketKeyCreateInput creates a bucket key.
 type StorageBucketKeyCreateInput struct {
 	Pool       string `json:"pool" jsonschema:"the storage pool"`
+	Project    string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 	BucketName string `json:"bucket_name" jsonschema:"the bucket name"`
 	KeyName    string `json:"key_name" jsonschema:"the key name"`
 	Role       string `json:"role,omitempty" jsonschema:"the key role (admin, read-only)"`
@@ -437,7 +448,7 @@ func (s *Server) storageBucketKeyCreate(ctx context.Context, req *mcp.CallToolRe
 	if in.Pool == "" || in.BucketName == "" || in.KeyName == "" {
 		return toolError[StorageBucketKeyCreateOutput]("storage_bucket_key_create", errRequired("pool, bucket_name, and key_name"))
 	}
-	key, err := s.client.Server.CreateStoragePoolBucketKey(in.Pool, in.BucketName, api.StorageBucketKeysPost{
+	key, err := s.projectServer(in.Project).CreateStoragePoolBucketKey(in.Pool, in.BucketName, api.StorageBucketKeysPost{
 		Name: in.KeyName,
 		StorageBucketKeyPut: api.StorageBucketKeyPut{
 			Role: in.Role,
@@ -457,6 +468,7 @@ func (s *Server) storageBucketKeyCreate(ctx context.Context, req *mcp.CallToolRe
 // StorageBucketKeyDeleteInput deletes a bucket key.
 type StorageBucketKeyDeleteInput struct {
 	Pool       string `json:"pool" jsonschema:"the storage pool"`
+	Project    string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 	BucketName string `json:"bucket_name" jsonschema:"the bucket name"`
 	KeyName    string `json:"key_name" jsonschema:"the key name"`
 }
@@ -465,7 +477,7 @@ func (s *Server) storageBucketKeyDelete(ctx context.Context, req *mcp.CallToolRe
 	if in.Pool == "" || in.BucketName == "" || in.KeyName == "" {
 		return toolError[string]("storage_bucket_key_delete", errRequired("pool, bucket_name, and key_name"))
 	}
-	if err := s.client.Server.DeleteStoragePoolBucketKey(in.Pool, in.BucketName, in.KeyName); err != nil {
+	if err := s.projectServer(in.Project).DeleteStoragePoolBucketKey(in.Pool, in.BucketName, in.KeyName); err != nil {
 		return toolError[string]("storage_bucket_key_delete", err)
 	}
 	return result("bucket key deleted: " + in.KeyName)
@@ -482,16 +494,22 @@ func (s *Server) registerStorageTools() {
 	addTool(s, "storage_volume_create", "Create a custom volume.", s.storageVolumeCreate)
 	addTool(s, "storage_volume_update", "Update a volume's config or size.", s.storageVolumeUpdate)
 	addTool(s, "storage_volume_delete", "Delete a custom volume.", s.storageVolumeDelete)
-	addTool(s, "storage_volume_rename", "Rename or move a custom volume.", s.storageVolumeRename)
+	addTool(s, "storage_volume_rename", "Rename a custom volume.", s.storageVolumeRename)
+	addTool(s, "storage_volume_move", "Move a custom volume to another pool.", s.storageVolumeMove)
 	addTool(s, "storage_volume_snapshot_create", "Create a volume snapshot.", s.storageVolumeSnapshotCreate)
 	addTool(s, "storage_volume_snapshot_list", "List volume snapshots.", s.storageVolumeSnapshotList)
 	addTool(s, "storage_volume_snapshot_delete", "Delete a volume snapshot.", s.storageVolumeSnapshotDelete)
+	addTool(s, "storage_volume_snapshot_rename", "Rename a volume snapshot.", s.storageVolumeSnapshotRename)
 	addTool(s, "storage_volume_snapshot_restore", "Restore a volume from a snapshot.", s.storageVolumeSnapshotRestore)
 	addTool(s, "storage_volume_backup_create", "Create a volume backup.", s.storageVolumeBackupCreate)
 	addTool(s, "storage_volume_backup_list", "List volume backups.", s.storageVolumeBackupList)
 	addTool(s, "storage_volume_backup_delete", "Delete a volume backup.", s.storageVolumeBackupDelete)
+	addTool(s, "storage_volume_backup_rename", "Rename a volume backup.", s.storageVolumeBackupRename)
+	addTool(s, "storage_volume_backup_export", "Export a volume backup to a file on the MCP server host.", s.storageVolumeBackupExport)
+	addTool(s, "storage_volume_import_iso", "Import a staged ISO file as a custom ISO volume.", s.storageVolumeImportISO)
 	addTool(s, "storage_bucket_list", "List S3 buckets on a pool.", s.storageBucketList)
 	addTool(s, "storage_bucket_create", "Create an S3 bucket (returns access/secret key).", s.storageBucketCreate)
+	addTool(s, "storage_bucket_update", "Update an S3 bucket's config.", s.storageBucketUpdate)
 	addTool(s, "storage_bucket_delete", "Delete an S3 bucket.", s.storageBucketDelete)
 	addTool(s, "storage_bucket_key_create", "Create a bucket access key.", s.storageBucketKeyCreate)
 	addTool(s, "storage_bucket_key_delete", "Delete a bucket access key.", s.storageBucketKeyDelete)

@@ -23,7 +23,10 @@ type ImageListInput struct {
 	Filter      string `json:"filter,omitempty" jsonschema:"optional API filter expression"`
 }
 
-func (s *Server) imageList(ctx context.Context, req *mcp.CallToolRequest, in ImageListInput) (*mcp.CallToolResult, []api.Image, error) {
+func (s *Server) imageList(ctx context.Context, req *mcp.CallToolRequest, in ImageListInput) (*mcp.CallToolResult, ListOutput[api.Image], error) {
+	if err := validateProjectScope(in.Project, in.AllProjects); err != nil {
+		return toolError[ListOutput[api.Image]]("image_list", err)
+	}
 	var (
 		images []api.Image
 		err    error
@@ -32,17 +35,17 @@ func (s *Server) imageList(ctx context.Context, req *mcp.CallToolRequest, in Ima
 		if in.AllProjects {
 			images, err = s.client.Server.GetImagesAllProjectsWithFilter([]string{in.Filter})
 		} else {
-			images, err = s.client.Server.GetImagesWithFilter([]string{in.Filter})
+			images, err = s.projectServer(in.Project).GetImagesWithFilter([]string{in.Filter})
 		}
 	} else if in.AllProjects {
 		images, err = s.client.Server.GetImagesAllProjects()
 	} else {
-		images, err = s.client.Server.GetImages()
+		images, err = s.projectServer(in.Project).GetImages()
 	}
 	if err != nil {
-		return toolError[[]api.Image]("image_list", err)
+		return toolError[ListOutput[api.Image]]("image_list", err)
 	}
-	return result(images)
+	return result(ListOutput[api.Image]{Items: images})
 }
 
 // ImageGetInput fetches an image.
@@ -55,7 +58,7 @@ func (s *Server) imageGet(ctx context.Context, req *mcp.CallToolRequest, in Imag
 	if in.Fingerprint == "" {
 		return toolError[*api.Image]("image_get", errRequired("fingerprint"))
 	}
-	img, _, err := s.client.Server.GetImage(in.Fingerprint)
+	img, _, err := s.projectServer(in.Project).GetImage(in.Fingerprint)
 	if err != nil {
 		return toolError[*api.Image]("image_get", err)
 	}
@@ -105,17 +108,23 @@ func (s *Server) imageImport(ctx context.Context, req *mcp.CallToolRequest, in I
 			return toolError[*api.Operation]("image_import", errRequired("sha256 must be 64 hex characters for URL imports"))
 		}
 
+		aliases := make([]api.ImageAlias, 0, len(in.Aliases))
+		for _, name := range in.Aliases {
+			aliases = append(aliases, api.ImageAlias{Name: name})
+		}
 		post := api.ImagesPost{
 			Source: &api.ImagesPostSource{
-				Type: "url",
-				URL:  in.URL,
-				Mode: "pull",
+				Type:        "url",
+				URL:         in.URL,
+				Fingerprint: in.Sha256,
+				Mode:        "pull",
 			},
 			ImagePut: api.ImagePut{Public: in.Public},
+			Aliases:  aliases,
 		}
 		post.Filename = "image"
 
-		op, err := s.client.Server.CreateImage(post, nil)
+		op, err := s.projectServer(in.Project).CreateImage(post, nil)
 		if err != nil {
 			return toolError[*api.Operation]("image_import", err)
 		}
@@ -148,9 +157,14 @@ func (s *Server) imageImport(ctx context.Context, req *mcp.CallToolRequest, in I
 	// The server-side sha256 verification happens after upload; we pass the
 	// file(s) to the client's CreateImage, which handles single-file and
 	// split-image uploads.
-	op, err := s.client.Server.CreateImage(api.ImagesPost{
+	aliases := make([]api.ImageAlias, 0, len(in.Aliases))
+	for _, name := range in.Aliases {
+		aliases = append(aliases, api.ImageAlias{Name: name})
+	}
+	op, err := s.projectServer(in.Project).CreateImage(api.ImagesPost{
 		ImagePut: api.ImagePut{Public: in.Public},
 		Filename: filepath.Base(in.LocalFile),
+		Aliases:  aliases,
 	}, args)
 	if err != nil {
 		return toolError[*api.Operation]("image_import", err)
@@ -172,7 +186,7 @@ func (s *Server) imageDelete(ctx context.Context, req *mcp.CallToolRequest, in I
 	if in.Fingerprint == "" {
 		return toolError[*api.Operation]("image_delete", errRequired("fingerprint"))
 	}
-	op, err := s.client.Server.DeleteImage(in.Fingerprint)
+	op, err := s.projectServer(in.Project).DeleteImage(in.Fingerprint)
 	if err != nil {
 		return toolError[*api.Operation]("image_delete", err)
 	}
@@ -191,7 +205,7 @@ func (s *Server) imageRefresh(ctx context.Context, req *mcp.CallToolRequest, in 
 	if in.Fingerprint == "" {
 		return toolError[*api.Operation]("image_refresh", errRequired("fingerprint"))
 	}
-	op, err := s.client.Server.RefreshImage(in.Fingerprint)
+	op, err := s.projectServer(in.Project).RefreshImage(in.Fingerprint)
 	if err != nil {
 		return toolError[*api.Operation]("image_refresh", err)
 	}
@@ -211,15 +225,22 @@ func (s *Server) imageCopy(ctx context.Context, req *mcp.CallToolRequest, in Ima
 	if in.Fingerprint == "" {
 		return toolError[*api.Operation]("image_copy", errRequired("fingerprint"))
 	}
-	// Copy within the same server: use CreateImage with a local image source.
+	// Copy within the same server: create in the destination project while
+	// naming the source project when one was explicitly requested.
 	post := api.ImagesPost{
 		Source: &api.ImagesPostSource{
 			Type:        "image",
 			Fingerprint: in.Fingerprint,
 			Mode:        "pull",
+			Project:     in.Project,
 		},
 	}
-	op, err := s.client.Server.CreateImage(post, nil)
+	target := s.projectServer(in.TargetProject)
+	if in.TargetProject == "" {
+		target = s.projectServer(in.Project)
+		post.Source.Project = ""
+	}
+	op, err := target.CreateImage(post, nil)
 	if err != nil {
 		return toolError[*api.Operation]("image_copy", err)
 	}
@@ -266,7 +287,7 @@ func (s *Server) imageExport(ctx context.Context, req *mcp.CallToolRequest, in I
 	}
 	defer rf.Close()
 
-	resp, err := s.client.Server.GetImageFile(in.Fingerprint, incusclient.ImageFileRequest{
+	resp, err := s.projectServer(in.Project).GetImageFile(in.Fingerprint, incusclient.ImageFileRequest{
 		MetaFile:   mf,
 		RootfsFile: rf,
 	})
@@ -295,7 +316,7 @@ func (s *Server) imageAliasCreate(ctx context.Context, req *mcp.CallToolRequest,
 	if in.Name == "" || in.Fingerprint == "" {
 		return toolError[string]("image_alias_create", errRequired("name and fingerprint"))
 	}
-	err := s.client.Server.CreateImageAlias(api.ImageAliasesPost{
+	err := s.projectServer(in.Project).CreateImageAlias(api.ImageAliasesPost{
 		ImageAliasesEntry: api.ImageAliasesEntry{
 			Name: in.Name,
 			ImageAliasesEntryPut: api.ImageAliasesEntryPut{
@@ -319,7 +340,7 @@ func (s *Server) imageAliasDelete(ctx context.Context, req *mcp.CallToolRequest,
 	if in.Name == "" {
 		return toolError[string]("image_alias_delete", errRequired("name"))
 	}
-	if err := s.client.Server.DeleteImageAlias(in.Name); err != nil {
+	if err := s.projectServer(in.Project).DeleteImageAlias(in.Name); err != nil {
 		return toolError[string]("image_alias_delete", err)
 	}
 	return result("alias deleted: " + in.Name)
@@ -330,12 +351,12 @@ type ImageAliasListInput struct {
 	Project string `json:"project,omitempty" jsonschema:"project (defaults to configured default)"`
 }
 
-func (s *Server) imageAliasList(ctx context.Context, req *mcp.CallToolRequest, in ImageAliasListInput) (*mcp.CallToolResult, []api.ImageAliasesEntry, error) {
-	aliases, err := s.client.Server.GetImageAliases()
+func (s *Server) imageAliasList(ctx context.Context, req *mcp.CallToolRequest, in ImageAliasListInput) (*mcp.CallToolResult, ListOutput[api.ImageAliasesEntry], error) {
+	aliases, err := s.projectServer(in.Project).GetImageAliases()
 	if err != nil {
-		return toolError[[]api.ImageAliasesEntry]("image_alias_list", err)
+		return toolError[ListOutput[api.ImageAliasesEntry]]("image_alias_list", err)
 	}
-	return result(aliases)
+	return result(ListOutput[api.ImageAliasesEntry]{Items: aliases})
 }
 
 // ---- registration ----

@@ -79,7 +79,7 @@ func (s *Server) instanceExec(ctx context.Context, req *mcp.CallToolRequest, in 
 		Stderr: &stderr,
 	}
 
-	op, err := s.client.Server.ExecInstance(in.InstanceName, post, &args)
+	op, err := s.projectServer(in.Project).ExecInstance(in.InstanceName, post, &args)
 	if err != nil {
 		return toolError[ExecOutput]("instance_exec", err)
 	}
@@ -153,9 +153,8 @@ func (s *Server) filePush(ctx context.Context, req *mcp.CallToolRequest, in File
 	if mode == 0 {
 		mode = 0644
 	}
-	writeMode := "overwrite"
-	if !in.Overwrite {
-		// The Incus API fails when the file exists unless overwrite is set.
+	writeMode := ""
+	if in.Overwrite {
 		writeMode = "overwrite"
 	}
 
@@ -168,7 +167,7 @@ func (s *Server) filePush(ctx context.Context, req *mcp.CallToolRequest, in File
 		WriteMode: writeMode,
 	}
 
-	err := s.client.Server.CreateInstanceFile(in.InstanceName, in.Path, args)
+	err := s.projectServer(in.Project).CreateInstanceFile(in.InstanceName, in.Path, args)
 	if err != nil {
 		if !in.Overwrite && strings.Contains(strings.ToLower(err.Error()), "exists") {
 			return toolError[string]("file_push", fmt.Errorf("destination exists; pass overwrite=true to replace"))
@@ -206,7 +205,7 @@ func (s *Server) filePull(ctx context.Context, req *mcp.CallToolRequest, in File
 		return toolError[FilePullOutput]("file_pull", errRequired("instance_name and path"))
 	}
 
-	rc, resp, err := s.client.Server.GetInstanceFile(in.InstanceName, in.Path)
+	rc, resp, err := s.projectServer(in.Project).GetInstanceFile(in.InstanceName, in.Path)
 	if err != nil {
 		return toolError[FilePullOutput]("file_pull", err)
 	}
@@ -334,7 +333,7 @@ func (s *Server) fileList(ctx context.Context, req *mcp.CallToolRequest, in File
 	if in.InstanceName == "" || in.Path == "" {
 		return toolError[FileListOutput]("file_list", errRequired("instance_name and path"))
 	}
-	rc, resp, err := s.client.Server.GetInstanceFile(in.InstanceName, in.Path)
+	rc, resp, err := s.projectServer(in.Project).GetInstanceFile(in.InstanceName, in.Path)
 	if err != nil {
 		return toolError[FileListOutput]("file_list", err)
 	}
@@ -365,11 +364,12 @@ func (s *Server) fileDelete(ctx context.Context, req *mcp.CallToolRequest, in Fi
 	if in.InstanceName == "" || in.Path == "" {
 		return toolError[string]("file_delete", errRequired("instance_name and path"))
 	}
-	// The Incus API's DELETE honors a recursive query param for directories.
-	if err := s.client.Server.DeleteInstanceFile(in.InstanceName, in.Path); err != nil {
+	if in.Recursive {
+		return toolError[string]("file_delete", errUnsupported("recursive"))
+	}
+	if err := s.projectServer(in.Project).DeleteInstanceFile(in.InstanceName, in.Path); err != nil {
 		return toolError[string]("file_delete", err)
 	}
-	_ = in.Recursive
 	return result("deleted: " + in.Path)
 }
 

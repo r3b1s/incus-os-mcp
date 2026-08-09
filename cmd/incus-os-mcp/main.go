@@ -32,6 +32,8 @@ func main() {
 		err = cmdConfig(os.Args[2:])
 	case "doctor":
 		err = cmdDoctor(os.Args[2:])
+	case "console":
+		err = cmdConsole(os.Args[2:])
 	case "cert":
 		err = cmdCert(os.Args[2:])
 	case "version":
@@ -58,6 +60,7 @@ Usage:
   incus-os-mcp config show        Print the effective configuration
   incus-os-mcp config validate    Validate the effective configuration
   incus-os-mcp doctor             Run health checks against the target
+  incus-os-mcp console [flags] INSTANCE  Attach an interactive serial console
   incus-os-mcp cert setup         Mint a client certificate (openssl)
   incus-os-mcp version            Print version
 

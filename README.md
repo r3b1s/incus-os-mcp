@@ -16,7 +16,8 @@ A single static Go binary with two modes:
 
 - **`run`** — the MCP server: streamable HTTP on `127.0.0.1` (default port
   `8002`), serving typed tools grouped by resource domain.
-- **operator CLI** — `config init/show/validate`, `doctor`, `cert setup`.
+- **operator CLI** — `config init/show/validate`, `doctor`, `cert setup`, and
+  interactive serial-console attachment.
 
 The tool surface covers instances (CRUD, lifecycle, snapshots, backups,
 rename/move), exec + file push/pull, images (import/export/copy/aliases),
@@ -152,8 +153,35 @@ tool errors with the operation ID/URL + error string.
 `shell=true` opts into `/bin/sh -c`. The result carries `stdout`, `stderr`,
 and `exit_code` — a non-zero exit code is a **result field, not a tool error**.
 VM exec requires the Incus agent inside the VM; when unavailable the tool
-reports it cleanly. Interactive console sessions are **not** part of the MCP
-tool surface.
+reports it cleanly.
+
+## Console access
+
+`instance_console_log` is the bounded, non-interactive MCP diagnostic tool. It
+returns at most `max_bytes` (64 KiB by default) and reports truncation. MCP
+does not carry bidirectional terminal streams. For an interactive VM serial
+console, use the operator CLI from a real terminal:
+
+```sh
+bin/incus-os-mcp console --project lab vm-name
+```
+
+The command uses the configured project and client certificate, places the
+terminal in raw mode, restores it on every exit path, and forwards terminal
+resize events over the Incus console control channel. Press `Ctrl-C` to detach.
+
+## API-only Combustion ISO flow
+
+To bootstrap a disposable MicroOS VM without Incus CLI or appliance shell
+access, generate a per-run Combustion ISO outside the appliance, base64-encode
+it, and call `storage_volume_import_iso` with the encoded artifact and a unique
+custom-volume name. The bridge accepts at most 64 MiB decoded data, validates
+the ISO9660 primary-volume descriptor, writes only an ephemeral temporary file
+for the authenticated Incus upload, and removes that file afterward. Attach the
+imported volume as a CD-ROM disk device in the `instance_create` device map
+before first boot. After guest validation, delete the disposable VM and its
+custom ISO volume. Neither an IncusOS appliance path nor an MCP-server path is
+part of this flow.
 
 ## Deployment
 

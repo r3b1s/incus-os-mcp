@@ -16,7 +16,11 @@ const osAPIPrefix = "/os/1.0"
 // rawOS performs a RawQuery against the appliance API. Path is relative to
 // /os/1.0 (e.g. "system/update").
 func (s *Server) rawOS(ctx context.Context, method, path string, data any, out any) error {
-	resp, _, err := s.client.Server.RawQuery(method, osAPIPrefix+"/"+path, data, "")
+	admin, err := s.client.AdminClient()
+	if err != nil {
+		return err
+	}
+	resp, _, err := admin.RawQuery(method, osAPIPrefix+"/"+path, data, "")
 	if err != nil {
 		return err
 	}
@@ -103,15 +107,15 @@ func (s *Server) systemUpdateApply(ctx context.Context, req *mcp.CallToolRequest
 // SystemAppListInput lists installed applications.
 type SystemAppListInput struct{}
 
-func (s *Server) systemAppList(ctx context.Context, req *mcp.CallToolRequest, in SystemAppListInput) (*mcp.CallToolResult, []string, error) {
+func (s *Server) systemAppList(ctx context.Context, req *mcp.CallToolRequest, in SystemAppListInput) (*mcp.CallToolResult, ListOutput[string], error) {
 	if _, err := s.client.AdminClient(); err != nil {
-		return toolError[[]string]("system_app_list", err)
+		return toolError[ListOutput[string]]("system_app_list", err)
 	}
 	var apps []string
 	if err := s.rawOS(ctx, "GET", "applications", nil, &apps); err != nil {
-		return toolError[[]string]("system_app_list", err)
+		return toolError[ListOutput[string]]("system_app_list", err)
 	}
-	return result(apps)
+	return result(ListOutput[string]{Items: apps})
 }
 
 // SystemAppActionInput runs an application lifecycle action.
@@ -214,15 +218,15 @@ func (s *Server) systemRecoveryKeys(ctx context.Context, req *mcp.CallToolReques
 // SystemServiceListInput lists appliance services.
 type SystemServiceListInput struct{}
 
-func (s *Server) systemServiceList(ctx context.Context, req *mcp.CallToolRequest, in SystemServiceListInput) (*mcp.CallToolResult, []string, error) {
+func (s *Server) systemServiceList(ctx context.Context, req *mcp.CallToolRequest, in SystemServiceListInput) (*mcp.CallToolResult, ListOutput[string], error) {
 	if _, err := s.client.AdminClient(); err != nil {
-		return toolError[[]string]("system_service_list", err)
+		return toolError[ListOutput[string]]("system_service_list", err)
 	}
 	var services []string
 	if err := s.rawOS(ctx, "GET", "services", nil, &services); err != nil {
-		return toolError[[]string]("system_service_list", err)
+		return toolError[ListOutput[string]]("system_service_list", err)
 	}
-	return result(services)
+	return result(ListOutput[string]{Items: services})
 }
 
 // ---- registration ----
